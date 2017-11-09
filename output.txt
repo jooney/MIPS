@@ -1,0 +1,2 @@
+Here is a number: 150
+Now here is a string: aaa
