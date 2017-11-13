@@ -1,4 +1,5 @@
 #include <iostream>
+#include <iomanip>
 #include <fstream>
 #include <sstream>
 #include <string>
@@ -9,11 +10,11 @@
 #include <queue>
 #include <functional>
 #include <assert.h>
-#include <algorithm>
 #include "test.h"
 using std::endl;
 using std::cout;
 
+const int STARTADDRESS = 256;
 int g_startAddress = 256;
 const size_t InstLen = 32;
 const size_t RegLen  = 5;
@@ -24,15 +25,20 @@ class MemParser
 		MemParser();
 		~MemParser();
 		void   GetInstructions(const std::string& buf);
-		void   MemParse(const std::string& buf);
+		void   MemParse();
 		void   SimulateTrace();
+		void   output(); // for debug
 		template <size_t N>
 		std::bitset<N> getBitset(const std::string& buf);
 	private:
 		bool IsCategory1(const std::string& buf) const;
 		bool IsCategory2(const std::string& buf) const;
-		void Complement();
-		bool Break(const std::string& inst);
+		std::string Complement(int startAddr,const std::string& inst);
+		void InitDataMap();
+		void ParseInstruction();
+		void ParseEachInstruction();
+		void JudgeBreak(const std::string& inst);
+		void Output2File(const std::string& format); // param:file handler
 		inline bool Finished()const {return _bFinished;} 
 		void ADD();
 		void SUB();
@@ -57,18 +63,17 @@ class MemParser
 
 	private:
 		std::string               _InstruBuf;
-	//	std::bitset<InstLen>      _OpInstruction;
-	//	std::bitset<InstLen>      _DataInstruction;
 		std::bitset<InstLen>      _Instruction;
 		std::bitset<RegLen>       _Reg;
-		std::queue<std::string>   _OpFormatQueue;
-	//	std::queue<std::string>   _OpInstruction;
-		std::queue<std::string>   _DataInstruction;
+		std::queue<std::string>   _OpFormatQueue;  //now can be useless
+		std::queue<std::string>   _DataFormatQueue;
+		std::queue<std::string>   _OpInstruction;  //store 32 bit Op Instruction
+		std::queue<std::string>   _DataInstruction; // store 32 bit Data Instruction
 		typedef  int  DataValue;
 		std::vector<DataValue>    _vecRegister;
 		size_t                    _startPos;  //340
 		bool                      _bFinished;
-		int                       _dataStartAddr;
+		int                       _currentDataAddr;
 		const size_t  LenOfOpcode     = 4;
 		const size_t  LenOfRegS       = 5;
 		const size_t  LenOfRegT       = 5;
@@ -97,23 +102,47 @@ class MemParser
 };
 MemParser::MemParser()
 	:_bFinished(false),
-	_dataStartAddr(0),
-	_vecRegister(24)  //24 registers
+	_currentDataAddr(g_startAddress),
+	_vecRegister(32)  //32 registers
 {}
 MemParser::~MemParser()
 {
 }
-void MemParser::MemParse(const std::string& buf)
+
+void MemParser::InitDataMap()
+{
+	cout<<_DataInstruction.size()<<endl;
+	while (!_DataInstruction.empty())
+	{
+		//push to dataformat queue for final output data
+		_DataFormatQueue.push(Complement(_currentDataAddr,_DataInstruction.front()));
+		_currentDataAddr += 4;
+		_DataInstruction.pop();
+	}
+}
+
+void MemParser::MemParse()
+{
+	InitDataMap(); //data: addr 340 ~ addr 432
+	ParseInstruction();
+	//print Data instruction to disassembly.txt
+}
+
+void MemParser::ParseInstruction()
+{
+	while (!_OpInstruction.empty())
+	{
+		_Instruction = getBitset<InstLen>(_OpInstruction.front());
+		_InstruBuf = _Instruction.to_string();
+		assert(InstLen == _Instruction.size() && InstLen == _InstruBuf.length());
+		ParseEachInstruction();
+		_OpInstruction.pop();
+	}
+}
+
+void MemParser::ParseEachInstruction()
 {
 	_startPos = 0;
-	_Instruction = getBitset<InstLen>(buf);
-	_InstruBuf = _Instruction.to_string();
-	assert(InstLen == _Instruction.size() && InstLen == _InstruBuf.length());
-	if (Finished())
-	{
-		Complement();
-		return ;
-	}
 	_startPos += LenOfType ;
 	std::string Opcode(_InstruBuf.substr(_startPos,LenOfOpcode));
 	if (IsCategory1(_InstruBuf))
@@ -148,6 +177,7 @@ void MemParser::MemParse(const std::string& buf)
 	}
 	//cout<<_Instruction<<endl;
 }
+
 template <size_t N>
 std::bitset<N> MemParser::getBitset(const std::string& buf)
 {
@@ -165,12 +195,54 @@ bool MemParser::IsCategory2(const std::string& buf) const
 		return true;
 	return false;
 }
+
+void MemParser::Output2File(const std::string& format)
+{
+	int count = 0,cycle;
+	for (int i = 0; i<20;i++)
+		cout<<"-";
+	cout<<endl;
+	cycle = (g_startAddress - STARTADDRESS)/4 +1;
+	std::ostringstream oss;
+	oss<<"Cycle:"<<cycle;
+	if (cycle < 10) oss<<" "<<"\t"<<format<<endl<<endl;
+	else oss<<"\t"<<format<<endl<<endl;
+	cout<<oss.str();
+//	cout<<"Registers";
+//	for (auto it = _vecRegister.begin(); it != _vecRegister.end();++it)
+//	{
+//		if (count % 8 == 0)
+//		{
+//			cout<<endl<<"R";
+//			cout.setf(std::ios::right);
+//			cout.fill('0');
+//			cout.width(2);
+//			cout<<count<<":\t";
+//		}
+//		cout<<*it<<"\t";
+//		count++;
+//	}
+//	cout<<endl;
+//	count = 0;
+	cout<<"Data";
+	for (auto it = _dataMap.begin(); it != _dataMap.end(); ++it)
+	{
+		if (count % 8 == 0)
+		{
+			cout<<endl<<it->first<<":\t";
+		}
+		cout<<it->second<<"\t";
+		count++;
+	}
+	cout<<endl;
+}
+
 void MemParser::ADD()
 {
 	_startPos += LenOfOpcode;
 	_Reg = getBitset<RegLen>(_InstruBuf.substr(_startPos+2*RegLen,LenOfRegD)); 
 	char regS[8] = {0},regT[8] = {0},regD[8] = {0};
-	int idxS, idxT, idxD;
+	int idxS, idxT, idxD, cycle;
 	std::ostringstream oss, format;
 	idxD = _Reg.to_ulong(); //rd
 	sprintf(regD, "R%d", idxD);
@@ -180,10 +252,13 @@ void MemParser::ADD()
 	_Reg = getBitset<RegLen>(_InstruBuf.substr(_startPos+RegLen,LenOfRegT));
 	idxT = _Reg.to_ulong();//rt
 	sprintf(regT, "R%d", idxT);
-	format<<g_startAddress<<"\t"<<"Add "<<regD<<", "<<regS<<", "<<regT;
+	format<<g_startAddress<<"\t"<<"ADD "<<regD<<", "<<regS<<", "<<regT;
 	_OpFormatQueue.push(format.str());
 	oss<<_InstruBuf<<"\t"<<format.str(); 
-	cout<<oss.str()<<endl;
+//	cout<<oss.str()<<endl;
+	//(rs) +(rt) -> (rd)
+	_vecRegister[idxD] = _vecRegister[idxS] + _vecRegister[idxT];
+	Output2File(format.str());
 	g_startAddress += 4;
 }
 
@@ -205,7 +280,7 @@ void MemParser::SUB()
 	format<<g_startAddress<<"\t"<<"SUB "<<regD<<", "<<regS<<", "<<regT;
 	_OpFormatQueue.push(format.str());
 	oss<<_InstruBuf<<"\t"<<format.str();
-	cout<<oss.str()<<endl;
+//	cout<<oss.str()<<endl;
 	g_startAddress += 4;
 }
 
@@ -227,7 +302,9 @@ void MemParser::ADDI()
 	format<<g_startAddress<<"\t"<<"ADDI "<<regT<<", "<<regS<<", "<<immediate;
 	_OpFormatQueue.push(format.str());
 	oss<<_InstruBuf<<"\t"<<format.str();
-	cout<<oss.str()<<endl;
+//	cout<<oss.str()<<endl;
+	//rs + i
+	Output2File(format.str());
 	g_startAddress += 4;
 }
 
@@ -252,7 +329,7 @@ void MemParser::BEQ()
 	format<<g_startAddress<<"\t"<<"BEQ "<<regS<<", "<<regT<<", "<<immediate;
 	_OpFormatQueue.push(format.str());
 	oss<<_InstruBuf<<"\t"<<format.str();
-	cout<<oss.str()<<endl;
+//	cout<<oss.str()<<endl;
 	g_startAddress += 4;
 }
 
@@ -274,7 +351,7 @@ void MemParser::BLTZ()
 	format<<g_startAddress<<"\t"<<"BLTZ "<<regS<<", "<<regOffset;
 	_OpFormatQueue.push(format.str());
 	oss<<_InstruBuf<<"\t"<<format.str();
-	cout<<oss.str()<<endl;
+//	cout<<oss.str()<<endl;
 	g_startAddress += 4;
 }
 
@@ -292,7 +369,7 @@ void MemParser::J()
 	format<<g_startAddress<<"\t"<<"J "<<instr_index;
 	_OpFormatQueue.push(format.str());
 	oss<<_InstruBuf<<"\t"<<format.str();
-	cout<<oss.str()<<endl;
+//	cout<<oss.str()<<endl;
 	g_startAddress += 4;
 }
 
@@ -314,7 +391,7 @@ void MemParser::BGTZ()
 	format<<g_startAddress<<"\t"<<"BGTZ "<<regS<<", "<<regOffset;
 	_OpFormatQueue.push(format.str());
 	oss<<_InstruBuf<<"\t"<<format.str();
-	cout<<oss.str()<<endl;
+//	cout<<oss.str()<<endl;
 	g_startAddress += 4;	
 }
 
@@ -337,7 +414,7 @@ void MemParser::SLL()
 	_OpFormatQueue.push(format.str());
 	oss<<_InstruBuf<<"\t"<<format.str();
 	std::string output = oss.str();
-	cout<<output<<endl;
+//	cout<<output<<endl;
 	g_startAddress += 4;
 }
 
@@ -360,7 +437,7 @@ void MemParser::LW()
 	format<<g_startAddress<<"\t"<<"LW "<<regT<<", "<<offset<<"("<<regBase<<")";
 	_OpFormatQueue.push(format.str());
 	oss<<_InstruBuf<<"\t"<<format.str();
-	cout<<oss.str()<<endl;
+//	cout<<oss.str()<<endl;
 	g_startAddress += 4;
 }
 
@@ -382,7 +459,7 @@ void MemParser::MUL()
 	format<<g_startAddress<<"\t"<<"MUL "<<regD<<", "<<regS<<", "<<regT;
 	_OpFormatQueue.push(format.str());
 	oss<<_InstruBuf<<"\t"<<format.str();
-	cout<<oss.str()<<endl;
+//	cout<<oss.str()<<endl;
 	g_startAddress += 4;
 }
 
@@ -405,7 +482,7 @@ void MemParser::SW()
 	format<<g_startAddress<<"\t"<<"SW "<<regT<<", "<<regOffset<<"("<<regBase<<")";
 	_OpFormatQueue.push(format.str());
 	oss<<_InstruBuf<<"\t"<<format.str();
-	cout<<oss.str()<<endl;
+//	cout<<oss.str()<<endl;
 	g_startAddress += 4;
 }
 
@@ -416,20 +493,21 @@ void MemParser::BREAK()
 	format<<g_startAddress<<"\t"<<"BREAK";
 	_OpFormatQueue.push(format.str());
 	oss<<_InstruBuf<<"\t"<<format.str();
-	cout<<oss.str()<<endl;
+//	cout<<oss.str()<<endl;
 	g_startAddress += 4;
 	_bFinished = true;
 }
 
-void MemParser::Complement()
+std::string MemParser::Complement(int startAddr, const std::string& inst)
 {
 	//positive or negative
 	bool bPositive = false;
-	unsigned long num ;
-	if (_Instruction.test(31)) 
+	std::bitset<InstLen> instset(inst);
+	int num;
+	if (instset.test(31)) 
 	{
 		bPositive = false; //negative
-		std::bitset<InstLen> tmpset = _Instruction;
+		std::bitset<InstLen> tmpset(instset); //= inst;
 		tmpset.flip();
 		bool bCarry = false;
 		//diwei add 1
@@ -463,17 +541,20 @@ void MemParser::Complement()
 	else //positive
 	{
 		bPositive = true;
-		num = _Instruction.to_ulong();
+		std::bitset<InstLen> bit(inst);
+		num = bit.to_ulong();
 	}
 	std::ostringstream oss;
 	if (!bPositive)
 	{
-		oss<<_Instruction<<"\t"<<g_startAddress<<"\t"<<"-"<<num;
+		_dataMap.insert(std::make_pair(startAddr,num*-1));
+		oss<<inst<<"\t"<<startAddr<<"\t"<<"-"<<num;
 	}else{
-		oss<<_Instruction<<"\t"<<g_startAddress<<"\t"<<num;
+		_dataMap.insert(std::make_pair(startAddr,num));
+		oss<<inst<<"\t"<<startAddr<<"\t"<<num;
 	}
-	cout<<oss.str()<<endl;
-	g_startAddress += 4;
+//	cout<<oss.str()<<endl; 
+	return oss.str();
 }
 
 void MemParser::SimulateTrace()
@@ -488,14 +569,44 @@ void MemParser::SimulateTrace()
 	}
 }
 
+void MemParser::JudgeBreak(const std::string& inst)
+{
+	assert(inst.length() == InstLen);
+	if (inst[0] == '0' && inst[1] == '1' && inst[2] == '0' && inst[3] == '1' 
+		&& inst[4] == '0' && inst[5] == '1')
+	{
+		_bFinished = true;
+	}
+}
+
 void MemParser::GetInstructions(const std::string& buf)
 {
 	std::bitset<InstLen> inst = getBitset<InstLen>(buf);	
-	bool bBreak = false;
 	std::string str = inst.to_string();
+	if (!Finished())
+	{
+		JudgeBreak(str);
+		_currentDataAddr += 4;
+		_OpInstruction.push(str);
+	}
+	else
+	{
+		_DataInstruction.push(str);
+	}
+}
 
-	//_Instruction = getBitset<InstLen>(buf);
-	//_InstruBuf = _Instruction.to_string();
+void MemParser::output()
+{
+	while (!_OpInstruction.empty())
+	{
+		cout<<_OpInstruction.front()<<endl;
+		_OpInstruction.pop();
+	}
+	while (!_DataInstruction.empty())
+	{
+		cout<<_DataInstruction.front()<<endl;
+		_DataInstruction.pop();
+	}
 }
 
 class MIPSsim
@@ -505,15 +616,6 @@ class MIPSsim
 		~MIPSsim();
 		int Parse();
 	private:
-		//void ADD(const std::string& buf)//buf:  0~25 bit
-		//{
-		//}
-		//void ADDI(const std::string& buf)
-		//{
-		//}
-		//void BEQ(const std::string& buf)
-		//{
-		//}
 		MemParser            _memParser;
 		std::ifstream        _infile;
 		std::ofstream        _disassemblefile;
@@ -536,9 +638,9 @@ int MIPSsim::Parse()
 	while (getline(_infile,buf))
 	{
 		_memParser.GetInstructions(buf);
-		//_memParser.MemParse(buf);
 	}
-//	_memParser.MemParser();
+//	_memParser.output(); //for debug
+	_memParser.MemParse();
 	return 0;
 }
 int main(int argc, char*argv[])
@@ -598,5 +700,10 @@ int main(int argc, char*argv[])
 //		cout<<*it<<" ";
 //	}
 //	vec[0] = 10;
+	//int cycle = 10;
+	//std::ostringstream oss;
+	//oss<<"hello"<<"\t"<<"world";
+	//cout<<"Cycle:"<<cycle<<"\t"<<oss.str()<<endl;
+	//cout<<"Cycle:"<<cycle<<"\t"<"hello"<<"\t"<<"world"<<endl;
 	return 0;
 }
