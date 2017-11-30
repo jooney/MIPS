@@ -6,7 +6,6 @@
 #include <string>
 #include <map>
 #include <memory>
-#include <string.h>
 #include <bitset>
 #include <queue>
 #include <functional>
@@ -17,6 +16,26 @@ using namespace std::placeholders;
 class InstParser
 {
 	public:
+		struct IFUnit
+		{
+			std::string _waitingInst;
+			std::string _executedInst;
+			bool        _bStalled;  //the fetch unit can be stalled due to a branch instruction
+			IFUnit()
+				:_waitingInst(""),_executedInst(""),_bStalled(false){}
+			bool  IsStalled()const {return _bStalled;}
+		};
+		struct RegInfo
+		{
+			int   _val;
+			bool  _bWrite;
+			bool  _bRead;
+			bool  _bTobeWrite;
+			bool  _bTobeRead;
+			RegInfo()
+				:_bWrite(false),_bRead(false),_bTobeWrite(false),_bTobeRead(false){}
+		};
+	public:
 		InstParser(const char* filename);
 		~InstParser();
 		void ReadInstsFromFile();
@@ -24,58 +43,66 @@ class InstParser
 	private:
 		void ParseDataInst();
 		void ParseInst();
-		void ParseEachInst(bool bTrace);
+		void ParseEachInst(bool,std::string& ParsedInst);
+		void DoPipeLine();
 		bool bBreakInst(const std::string& inst);
 		void trace2File(const std::string& format);
-		void ParsedData2File();
 		inline bool Finished()const {return _bFinished;} 
 		inline bool Jump() const {return _bJump;}
+		inline bool CanFetchNextInst()const {return !IsPreIssueQuFull() && !_IfUnit.IsStalled();}
 		inline bool Branch1(const std::string& buf) const {return ('0' == buf[0] && '1' == buf[1])? true:false;}
 		inline bool Branch2(const std::string& buf) const {return ('1' == buf[0] && '1' == buf[1])? true:false;};
+		inline bool IsPreIssueQuFull() const {return _preIssuequ.size() >= PreQuSize;};
 		template <size_t N>
 		inline std::bitset<N> fromStr2Bit(const std::string& buf) const {return std::bitset<N>(buf);}
 		inline void SetDstInstAddr(int dstInstAddr){_dstInstAddr = dstInstAddr;}
 		inline int  GetDstInstAddr()const{return _dstInstAddr;}
-		void ADD(bool trace = false);
-		void SUB(bool trace = false);
-		void BEQ(bool trace = false);
-		void MUL(bool trace = false);
-		void AND(bool trace = false);
-		void OR(bool trace = false);
-		void XOR(bool trace = false);
-		void NOR(bool trace = false);
-		void SLT(bool trace = false);
-		void ADDI(bool trace = false);
-		void ANDI(bool trace = false);
-		void ORI(bool trace = false);
-		void XORI(bool trace = false);
-		void SLL(bool trace = false);
-		void LW(bool trace = false);
-		void BGTZ(bool trace = false);
-		void J(bool trace = false);
-		void BLTZ(bool trace = false);
-		void SW(bool trace = false);
-		void BREAK(bool trace = false);
-		void SRL(bool trace = false);
-		void SRA(bool trace = false);
-		void NOP(bool trace = false);
-		void JR(bool trace = false);
+		void ADD(bool,std::string&);
+		void SUB(bool,std::string&);
+		void BEQ(bool,std::string&);
+		void MUL(bool,std::string&);
+		void AND(bool,std::string&);
+		void OR(bool,std::string&);
+		void XOR(bool,std::string&);
+		void NOR(bool,std::string&);
+		void SLT(bool,std::string&);
+		void ADDI(bool,std::string&);
+		void ANDI(bool,std::string&);
+		void ORI(bool,std::string&);
+		void XORI(bool,std::string&);
+		void SLL(bool,std::string&);
+		void LW(bool,std::string&);
+		void BGTZ(bool,std::string&);
+		void J(bool,std::string&);
+		void BLTZ(bool,std::string&);
+		void SW(bool,std::string&);
+		void BREAK(bool,std::string&);
+		void SRL(bool,std::string&);
+		void SRA(bool,std::string&);
+		void NOP(bool,std::string&);
+		void JR(bool,std::string&);
 
 	private:
 		std::ifstream             _infile;
-		std::ofstream             _dAssemblyFile;
 		std::ofstream             _traceFile;
 		std::string               _InstStr;
 		std::queue<std::string>   _parsedDataqu;
 		std::queue<std::string>   _opSequencequ;
+		std::queue<std::pair<int,std::string>>   _preIssuequ;
+		std::queue<std::pair<int,std::string>>   _preAlu1qu;
+		std::queue<std::pair<int,std::string>>   _preMemqu;
+		std::queue<std::pair<int,std::string>>   _postMemqu;
+		std::queue<std::pair<int,std::string>>   _preAlu2qu;
+		std::queue<std::pair<int,std::string>>   _postAlu2qu;
 		int                       _InstructionAddr;
 		size_t                    _startPos;  
 		bool                      _bFinished;
 		bool                      _bJump;
 		int                       _dstInstAddr;
+		IFUnit                    _IfUnit;
 		typedef std::map<int,int> ADDR2MEMDATA;
 		ADDR2MEMDATA  _addr2MemData;
-		std::vector<int>  _regVec;
+		std::vector<RegInfo>  _regVec;
 		typedef std::map<int,std::string> ADDR2OPINST;
 		ADDR2OPINST _addr2OpInst;
 		typedef std::map<int,std::string> ADDR2DATAINST;
@@ -88,21 +115,23 @@ class InstParser
 		OPBRANCH2 _opBranch2 = {{"0000","ADD"},{"0001","SUB"},{"0010","MUL"},{"0011","AND"},{"0100","OR"},
                           {"0101","XOR"},{"0110","NOR"},{"0111","SLT"},{"1000","ADDI"},{"1001","ANDI"},
                           {"1010","ORI"},{"1011","XORI"}};
-		typedef std::map<std::string,std::function<void(bool)>> OP2FUNC;
-		OP2FUNC  _Op2Func = {{"ADD",std::bind(&InstParser::ADD,this,_1)},{"SUB",std::bind(&InstParser::SUB,this,_1)},
-		                    {"ADDI",std::bind(&InstParser::ADDI,this,_1)},{"BEQ",std::bind(&InstParser::BEQ,this,_1)},
-							{"SLL",std::bind(&InstParser::SLL,this,_1)},{"LW",std::bind(&InstParser::LW,this,_1)},
-							{"MUL",std::bind(&InstParser::MUL,this,_1)},{"BGTZ",std::bind(&InstParser::BGTZ,this,_1)},
-							{"J",std::bind(&InstParser::J,this,_1)},{"BLTZ",std::bind(&InstParser::BLTZ,this,_1)},
-							{"SW",std::bind(&InstParser::SW,this,_1)},{"BREAK",std::bind(&InstParser::BREAK,this, _1)},
-							{"SRL",std::bind(&InstParser::SRL,this,_1)},{"SRA", std::bind(&InstParser::SRA,this,_1)},
-							{"NOP",std::bind(&InstParser::NOP,this,_1)},{"JR",std::bind(&InstParser::JR,this,_1)},
-							{"AND",std::bind(&InstParser::AND,this,_1)},{"OR",std::bind(&InstParser::OR,this,_1)},
-							{"XOR",std::bind(&InstParser::XOR,this,_1)},{"SLT",std::bind(&InstParser::SLT,this,_1)},
-							{"ANDI",std::bind(&InstParser::ANDI,this,_1)},{"ORI",std::bind(&InstParser::ORI,this,_1)},
-							{"XORI",std::bind(&InstParser::XORI,this,_1)},{"NOR",std::bind(&InstParser::NOR,this,_1)}};
+		typedef std::map<std::string,std::function<void(bool,std::string&)>> OP2FUNC;
+		OP2FUNC  _Op2Func = {{"ADD",std::bind(&InstParser::ADD,this,_1,_2)},{"SUB",std::bind(&InstParser::SUB,this,_1,_2)},
+		                    {"ADDI",std::bind(&InstParser::ADDI,this,_1,_2)},{"BEQ",std::bind(&InstParser::BEQ,this,_1,_2)},
+							{"SLL",std::bind(&InstParser::SLL,this,_1,_2)},{"LW",std::bind(&InstParser::LW,this,_1,_2)},
+							{"MUL",std::bind(&InstParser::MUL,this,_1,_2)},{"BGTZ",std::bind(&InstParser::BGTZ,this,_1,_2)},
+							{"J",std::bind(&InstParser::J,this,_1,_2)},{"BLTZ",std::bind(&InstParser::BLTZ,this,_1,_2)},
+							{"SW",std::bind(&InstParser::SW,this,_1,_2)},{"BREAK",std::bind(&InstParser::BREAK,this, _1,_2)},
+							{"SRL",std::bind(&InstParser::SRL,this,_1,_2)},{"SRA", std::bind(&InstParser::SRA,this,_1,_2)},
+							{"NOP",std::bind(&InstParser::NOP,this,_1,_2)},{"JR",std::bind(&InstParser::JR,this,_1,_2)},
+							{"AND",std::bind(&InstParser::AND,this,_1,_2)},{"OR",std::bind(&InstParser::OR,this,_1,_2)},
+							{"XOR",std::bind(&InstParser::XOR,this,_1,_2)},{"SLT",std::bind(&InstParser::SLT,this,_1,_2)},
+							{"ANDI",std::bind(&InstParser::ANDI,this,_1,_2)},{"ORI",std::bind(&InstParser::ORI,this,_1,_2)},
+							{"XORI",std::bind(&InstParser::XORI,this,_1,_2)},{"NOR",std::bind(&InstParser::NOR,this,_1,_2)}};
 
 	private:
+		static const size_t PreQuSize = 4;
+		static const size_t AluQuSize = 2;
 		static const size_t InstLen = 32;
 		static const size_t RegLen  = 5;
 		static const int    BeginAddr = 256;
@@ -119,56 +148,46 @@ InstParser::InstParser(const char* filename)
 	_infile.open(filename,std::ios::binary);
 }
 InstParser::~InstParser(){}
-void InstParser::ParsedData2File()
-{
-	while (!_parsedDataqu.empty())
-	{
-		_dAssemblyFile<<_parsedDataqu.front()<<endl;
-		_parsedDataqu.pop();
-	}
-}
 
 void InstParser::instParse()
 {
-	_dAssemblyFile.open("disassembly.txt");
 	_traceFile.open("simulation.txt");
 	ParseDataInst();
 	ParseInst();
 	_traceFile.close();
-	ParsedData2File();
-	_dAssemblyFile.close();
 }
 
 void InstParser::ParseInst()
 {
-	bool bTrace = false;
+	bool bPipe = false;std::string ParsedInst("");
+	int nFetchTimes = 0; //each time IFunit has most 2 times to fetch inst
 	auto it = _addr2OpInst.begin();
-	while (it != _addr2OpInst.end()) //disassemblyfile
-	{
-		_InstructionAddr = it->first;
-		_InstStr = it->second;
-		assert(InstLen == _InstStr.length());
-		ParseEachInst(bTrace);
-		it ++;
-	}
-	it = _addr2OpInst.begin();
-	bTrace = true;
 	while (it != _addr2OpInst.end() && !Finished()) //simulationfile
 	{
-		if (Jump())
+		while (CanFetchNextInst() && nFetchTimes < 2 )
 		{
-			int dstAddr = GetDstInstAddr();
-			it = _addr2OpInst.find(dstAddr);
+			if (Jump())
+			{
+				int dstAddr = GetDstInstAddr();
+				it = _addr2OpInst.find(dstAddr);
+			}
+			_InstructionAddr = it->first;
+			_InstStr = it->second;
+			assert(InstLen == _InstStr.length());
+			ParseEachInst(false,ParsedInst);
+			nFetchTimes ++;
+			it ++;
+			_preIssuequ.push(std::make_pair(_InstructionAddr,ParsedInst));
 		}
-		_InstructionAddr = it->first;
-		_InstStr = it->second;
-		assert(InstLen == _InstStr.length());
-		ParseEachInst(bTrace);
-		it ++;
+		DoPipeLine();
+		nFetchTimes = 0;
 	}
 }
 
-void InstParser::ParseEachInst(bool bTrace)
+void InstParser::DoPipeLine()
+{
+}
+void InstParser::ParseEachInst(bool bWB,std::string& ParsedInst)
 {
 	_startPos = 0;
 	_startPos += BranchLen ;
@@ -181,7 +200,7 @@ void InstParser::ParseEachInst(bool bTrace)
 			OP2FUNC::iterator iter = _Op2Func.find(it->second);
 			if (iter != _Op2Func.end()){
 				_startPos += OpLen;
-				(iter->second)(bTrace);
+				(iter->second)(bWB,ParsedInst);
 			}
 		}
 	}
@@ -193,7 +212,7 @@ void InstParser::ParseEachInst(bool bTrace)
 			OP2FUNC::iterator iter = _Op2Func.find(it->second);
 			if (iter != _Op2Func.end()){
 				_startPos += OpLen;
-				(iter->second)(bTrace);
+				(iter->second)(bWB,ParsedInst);
 			}
 		}
 	}
@@ -213,6 +232,15 @@ void InstParser::ParseDataInst()
 }
 void InstParser::trace2File(const std::string& format)
 {
+	std::queue<std::pair<int,std::string>> tmpqu;
+	auto lambda = [&tmpqu]() ->std::string {
+		if (!tmpqu.empty()){
+			std::string str = tmpqu.front().second;
+			tmpqu.pop();
+			return str;
+		}
+		return "";
+	};
 	int count = 0;
 	static int cycle = 1;
 	for (int i = 0; i<20;i++)
@@ -223,6 +251,20 @@ void InstParser::trace2File(const std::string& format)
 	if (cycle < 10) oss<<" "<<"\t"<<format<<endl<<endl;
 	else oss<<"\t"<<format<<endl<<endl;
 	_traceFile<<oss.str();
+	//IF Unit
+	_traceFile<<"IF Unit:"<<endl<<"\t"<<"Waiting Instruction: "<<_IfUnit._waitingInst<<endl<<"\t"<<"Executed Instruction: "<<_IfUnit._executedInst<<endl;
+	//Pre-Issus Queue
+	tmpqu = _preIssuequ;
+	_traceFile<<"Pre-Issue Queue:"<<endl<<"\tEntry 0: "<<lambda()<<endl<<"\tEntry 1: "<<lambda()<<endl<<"\tEntry 2: "<<lambda()<<endl<<"\tEntry 3: "<<lambda()<<endl;
+	//Pre-Alu1 Queue
+	tmpqu = _preAlu1qu;
+	_traceFile<<"Pre-ALU1 Queue:"<<endl<<"\tEntry 0: "<<lambda()<<endl<<"\tEntry 1: "<<lambda()<<endl;
+	//Pre-MEM Queue
+	tmpqu = _preMemqu;
+	_traceFile<<"Pre-MEM Queue: "<<lambda()<<endl;
+	//Post-MEM Queue
+	tmpqu = _postMemqu;
+	_traceFile<<"Post-MEM Queue: "<<lambda()<<endl;
 	_traceFile<<"Registers";
 	for (auto it = _regVec.begin(); it != _regVec.end();++it)
 	{
@@ -234,7 +276,7 @@ void InstParser::trace2File(const std::string& format)
 			_traceFile.width(2);
 			_traceFile<<count<<":\t";
 		}
-		_traceFile<<*it<<"\t";
+		_traceFile<<it->_val<<"\t";
 		count++;
 	}
 	_traceFile<<endl<<endl;
@@ -253,7 +295,7 @@ void InstParser::trace2File(const std::string& format)
 	cycle ++;
 }
 
-void InstParser::ADD(bool bTrace)//(rs) +(rt) -> (rd)
+void InstParser::ADD(bool bWB,std::string& ParsedInst)//(rs) +(rt) -> (rd)
 {
 	char regS[8] = {0},regT[8] = {0},regD[8] = {0};
 	int idxS, idxT, idxD;
@@ -264,19 +306,16 @@ void InstParser::ADD(bool bTrace)//(rs) +(rt) -> (rd)
 	sprintf(regS, "R%d", idxS);
 	idxT = fromStr2Bit<RegLen>(_InstStr.substr(_startPos+RegLen,RegLen)).to_ulong();
 	sprintf(regT, "R%d", idxT);
-	format<<_InstructionAddr<<"\t"<<"ADD "<<regD<<", "<<regS<<", "<<regT;
-	if (!bTrace)
-	{
-		oss<<_InstStr<<"\t"<<format.str();
-		_dAssemblyFile<<oss.str()<<endl;
-		return ;
-	}
-	_regVec[idxD] = _regVec[idxS] + _regVec[idxT];
+	format<<"[ADD "<<regD<<", "<<regS<<", "<<regT<<"]";
+	ParsedInst = format.str();
+	//format<<_InstructionAddr<<"\t"<<"ADD "<<regD<<", "<<regS<<", "<<regT;
+	if (bWB)
+		_regVec[idxD]._val = _regVec[idxS]._val + _regVec[idxT]._val;
 	_bJump = false;
-	trace2File(format.str());
+	//trace2File(format.str());
 }
 
-void InstParser::NOR(bool bTrace)// rs NOR rt -> (rd)
+void InstParser::NOR(bool bWB,std::string& ParsedInst)// rs NOR rt -> (rd)
 {
 	char regS[8] = {0},regT[8] = {0},regD[8] = {0};
 	int idxS, idxT, idxD;
@@ -287,19 +326,16 @@ void InstParser::NOR(bool bTrace)// rs NOR rt -> (rd)
 	sprintf(regS, "R%d", idxS);
 	idxT = fromStr2Bit<RegLen>(_InstStr.substr(_startPos+RegLen,RegLen)).to_ulong();
 	sprintf(regT, "R%d", idxT);
-	format<<_InstructionAddr<<"\t"<<"NOR "<<regD<<", "<<regS<<", "<<regT;
-	if (!bTrace)
-	{
-		oss<<_InstStr<<"\t"<<format.str();
-		_dAssemblyFile<<oss.str()<<endl;
-		return ;
-	}
-	_regVec[idxD] = ~(_regVec[idxS] | _regVec[idxT]);
+	format<<"[NOR "<<regD<<", "<<regS<<", "<<regT<<"]";
+	ParsedInst = format.str();
+	//format<<_InstructionAddr<<"\t"<<"NOR "<<regD<<", "<<regS<<", "<<regT;
+	if (bWB)
+		_regVec[idxD]._val = ~(_regVec[idxS]._val | _regVec[idxT]._val);
 	_bJump = false;
-	trace2File(format.str());
+	//trace2File(format.str());
 }
 
-void InstParser::SUB(bool bTrace)//rs - rt -> rd
+void InstParser::SUB(bool bWB,std::string& ParsedInst)//rs - rt -> rd
 {
 	char regS[8] = {0},regT[8] = {0},regD[8] = {0};
 	int idxS, idxT, idxD;
@@ -310,19 +346,16 @@ void InstParser::SUB(bool bTrace)//rs - rt -> rd
 	sprintf(regS, "R%d", idxS);
 	idxT = fromStr2Bit<RegLen>(_InstStr.substr(_startPos+RegLen,RegLen)).to_ulong();
 	sprintf(regT, "R%d", idxT);
-	format<<_InstructionAddr<<"\t"<<"SUB "<<regD<<", "<<regS<<", "<<regT;
-	if (!bTrace)
-	{
-		oss<<_InstStr<<"\t"<<format.str();
-		_dAssemblyFile<<oss.str()<<endl;
-		return ;
-	}
-	_regVec[idxD] = _regVec[idxS] - _regVec[idxT];
+	format<<"[SUB "<<regD<<", "<<regS<<", "<<regT<<"]";
+	ParsedInst = format.str();
+	//format<<_InstructionAddr<<"\t"<<"SUB "<<regD<<", "<<regS<<", "<<regT;
+	if (bWB)
+		_regVec[idxD]._val = _regVec[idxS]._val - _regVec[idxT]._val;
 	_bJump = false;
-	trace2File(format.str());
+	//trace2File(format.str());
 }
 
-void InstParser::ADDI(bool bTrace)//rs + immediate -> rt
+void InstParser::ADDI(bool bWB,std::string& ParsedInst)//rs + immediate -> rt
 {
 	char regS[8] = {0}, regT[8] = {0}, immediate[16] = {0};
 	int idxS, idxT;
@@ -333,20 +366,17 @@ void InstParser::ADDI(bool bTrace)//rs + immediate -> rt
 	sprintf(regS, "R%d", idxS);
 	std::bitset<16> immset;
 	sprintf(immediate,"#%lu",fromStr2Bit<16>(_InstStr.substr(_startPos+2*RegLen,16)).to_ulong());
-	format<<_InstructionAddr<<"\t"<<"ADDI "<<regT<<", "<<regS<<", "<<immediate;
-	if (!bTrace)
-	{
-		oss<<_InstStr<<"\t"<<format.str();
-		_dAssemblyFile<<oss.str()<<endl;
-		return ;
-	}
+	format<<"[ADDI "<<regT<<", "<<regS<<", "<<immediate<<"]";
+	ParsedInst = format.str();
+	//format<<_InstructionAddr<<"\t"<<"ADDI "<<regT<<", "<<regS<<", "<<immediate;
 	int immed = std::strtoul(_InstStr.substr(_startPos+2*RegLen,16).c_str(),NULL,2);
-	_regVec[idxT] = _regVec[idxS] + immed;
+	if (bWB)
+		_regVec[idxT]._val = _regVec[idxS]._val + immed;
 	_bJump = false;
-	trace2File(format.str());
+//	trace2File(format.str());
 }
 
-void InstParser::BEQ(bool bTrace)//if rs = rt then branch
+void InstParser::BEQ(bool bWB,std::string& ParsedInst)//if rs = rt then branch
 {
 	char regS[8] = {0}, regT[8] = {0},immediate[18] = {0};
 	int idxS, idxT, offset;
@@ -359,24 +389,22 @@ void InstParser::BEQ(bool bTrace)//if rs = rt then branch
 	Offset += "00";
 	offset = std::strtoul(Offset.c_str(),NULL,2);
 	sprintf(immediate, "#%d",offset);
-	format<<_InstructionAddr<<"\t"<<"BEQ "<<regS<<", "<<regT<<", "<<immediate;
-	if (!bTrace)
-	{
-		oss<<_InstStr<<"\t"<<format.str();
-		_dAssemblyFile<<oss.str()<<endl;
-		return ;
+	format<<"[BEQ "<<regS<<", "<<regT<<", "<<immediate<<"]";
+	ParsedInst = format.str();
+	//format<<_InstructionAddr<<"\t"<<"BEQ "<<regS<<", "<<regT<<", "<<immediate;
+	if (bWB){
+		if (_regVec[idxS]._val == _regVec[idxT]._val)
+		{
+			SetDstInstAddr(_InstructionAddr + offset + 4);
+			_bJump = true; // modify pc
+		}else{
+			_bJump = false;
+		}
 	}
-	if (_regVec[idxS] == _regVec[idxT])
-	{
-		SetDstInstAddr(_InstructionAddr + offset + 4);
-		_bJump = true; // modify pc
-	}else{
-		_bJump = false;
-	}
-	trace2File(format.str());
+//	trace2File(format.str());
 }
 
-void InstParser::BLTZ(bool bTrace)// if rs < 0 , then  branch
+void InstParser::BLTZ(bool bWB,std::string& ParsedInst)// if rs < 0 , then  branch
 {
 	char regS[8] = {0},regOffset[18] = {0};
 	int idxS, offset;
@@ -387,25 +415,23 @@ void InstParser::BLTZ(bool bTrace)// if rs < 0 , then  branch
 	Offset += "00";
 	offset = std::strtoul(Offset.c_str(),NULL,2);
 	sprintf(regOffset,"#%d",offset);
-	format<<_InstructionAddr<<"\t"<<"BLTZ "<<regS<<", "<<regOffset;
-	if (!bTrace)
-	{
-		oss<<_InstStr<<"\t"<<format.str();
-		_dAssemblyFile<<oss.str()<<endl;
-		return ;
+	format<<"[BLTZ "<<regS<<", "<<regOffset<<"]";
+	ParsedInst = format.str();
+	//format<<_InstructionAddr<<"\t"<<"BLTZ "<<regS<<", "<<regOffset;
+	if (bWB){
+		if (_regVec[idxS]._val < 0)
+		{
+			SetDstInstAddr(_InstructionAddr + offset + 4);
+			_bJump = true; //modify pc
+		}
+		else{
+			_bJump = false;
+		}
 	}
-	if (_regVec[idxS] < 0)
-	{
-		SetDstInstAddr(_InstructionAddr + offset + 4);
-		_bJump = true; //modify pc
-	}
-	else{
-		_bJump = false;
-	}
-	trace2File(format.str());
+//	trace2File(format.str());
 }
 
-void InstParser::J(bool bTrace)//offset -> pc
+void InstParser::J(bool bWB,std::string& ParsedInst)//offset -> pc
 {
 	char instr_index[28] = {0};
 	std::stringstream oss,format;
@@ -414,19 +440,15 @@ void InstParser::J(bool bTrace)//offset -> pc
 	//because pc addr can not be a negative
 	std::bitset<28> InstrSet = fromStr2Bit<28>(indexStr);
 	sprintf(instr_index,"#%lu",InstrSet.to_ulong());
-	format<<_InstructionAddr<<"\t"<<"J "<<instr_index;
-	if (!bTrace)
-	{
-		oss<<_InstStr<<"\t"<<format.str();
-		_dAssemblyFile<<oss.str()<<endl;
-		return ;
-	}
+	format<<"[J "<<instr_index<<"]";
+	ParsedInst = format.str();
+	//format<<_InstructionAddr<<"\t"<<"J "<<instr_index;
 	SetDstInstAddr(InstrSet.to_ulong()); // modify pc
-	trace2File(format.str());
+	//trace2File(format.str());
 	_bJump = true;
 }
 
-void InstParser::BGTZ(bool bTrace)//if rs > 0 then branch
+void InstParser::BGTZ(bool bWB,std::string& ParsedInst)//if rs > 0 then branch
 {
 	char regS[8] = {0}, regOffset[18] = {0};
 	int idxS ,offset;
@@ -437,24 +459,22 @@ void InstParser::BGTZ(bool bTrace)//if rs > 0 then branch
 	Offset += "00";
 	offset = std::strtoul(Offset.c_str(),NULL,2);
 	sprintf(regOffset, "#%d", offset);
-	format<<_InstructionAddr<<"\t"<<"BGTZ "<<regS<<", "<<regOffset;
-	if (!bTrace)
-	{
-		oss<<_InstStr<<"\t"<<format.str();
-		_dAssemblyFile<<oss.str()<<endl;
-		return ;
+	format<<"[BGTZ "<<regS<<", "<<regOffset<<"]";
+	ParsedInst = format.str();
+	//format<<_InstructionAddr<<"\t"<<"BGTZ "<<regS<<", "<<regOffset;
+	if (bWB){
+	if (_regVec[idxS]._val > 0)
+		{
+			SetDstInstAddr(_InstructionAddr + offset + 4); //modify pc
+			_bJump = true;
+		}else{
+			_bJump = false;
+		}
 	}
-	if (_regVec[idxS] > 0)
-	{
-		SetDstInstAddr(_InstructionAddr + offset + 4); //modify pc
-		_bJump = true;
-	}else{
-		_bJump = false;
-	}
-	trace2File(format.str());
+	//trace2File(format.str());
 }
 
-void InstParser::SLL(bool bTrace)//rt << sa -> rd
+void InstParser::SLL(bool bWB,std::string& ParsedInst)//rt << sa -> rd
 {
 	char regD[8] = {0}, regT[8] = {0},regSA[8] = {0};
 	int idxD, idxT, sa;
@@ -465,19 +485,16 @@ void InstParser::SLL(bool bTrace)//rt << sa -> rd
 	sprintf(regT,"R%d", idxT);
 	sa = fromStr2Bit<RegLen>(_InstStr.substr(_startPos+3*RegLen,RegLen)).to_ulong();
 	sprintf(regSA,"#%d",sa);
-	format<<_InstructionAddr<<"\t"<<"SLL "<<regD<<", "<<regT<<", "<<regSA;
-	if (!bTrace)
-	{
-		oss<<_InstStr<<"\t"<<format.str();
-		_dAssemblyFile<<oss.str()<<endl;
-		return ;
-	}
-	_regVec[idxD] = (_regVec[idxT] << sa);
-	trace2File(format.str());
+	format<<"[SLL "<<regD<<", "<<regT<<", "<<regSA<<"]";
+	ParsedInst = format.str();
+	//format<<_InstructionAddr<<"\t"<<"SLL "<<regD<<", "<<regT<<", "<<regSA;
+	if (bWB)
+		_regVec[idxD]._val = (_regVec[idxT]._val << sa);
+	//trace2File(format.str());
 	_bJump = false;
 }
 
-void InstParser::SRL(bool bTrace) //logical shift right //rt >> sa ->rd
+void InstParser::SRL(bool bWB,std::string& ParsedInst) //logical shift right //rt >> sa ->rd
 {
 	char regD[8] = {0}, regT[8] = {0},regSA[8] = {0};
 	int idxD, idxT, sa;
@@ -488,20 +505,19 @@ void InstParser::SRL(bool bTrace) //logical shift right //rt >> sa ->rd
 	sprintf(regT,"R%d", idxT);
 	sa = fromStr2Bit<RegLen>(_InstStr.substr(_startPos+3*RegLen,RegLen)).to_ulong();
 	sprintf(regSA,"#%d",sa);
-	format<<_InstructionAddr<<"\t"<<"SLL "<<regD<<", "<<regT<<", "<<regSA;
-	if (!bTrace)
+	format<<"[SLL "<<regD<<", "<<regT<<", "<<regSA<<"]";
+	ParsedInst = format.str();
+	//format<<_InstructionAddr<<"\t"<<"SLL "<<regD<<", "<<regT<<", "<<regSA;
+	if (bWB)
 	{
-		oss<<_InstStr<<"\t"<<format.str();
-		_dAssemblyFile<<oss.str()<<endl;
-		return ;
+		unsigned int tmp = _regVec[idxT]._val;
+		_regVec[idxD]._val = (tmp >> sa);
 	}
-	unsigned int tmp = _regVec[idxT];
-	_regVec[idxD] = (tmp >> sa);
-	trace2File(format.str());
+//	trace2File(format.str());
 	_bJump = false;
 }
 
-void InstParser::SRA(bool bTrace) //arighmetic shift right //rt >> sa ->rd
+void InstParser::SRA(bool bWB,std::string& ParsedInst) //arighmetic shift right //rt >> sa ->rd
 {
 	char regD[8] = {0}, regT[8] = {0},regSA[8] = {0};
 	int idxD, idxT, sa;
@@ -512,33 +528,26 @@ void InstParser::SRA(bool bTrace) //arighmetic shift right //rt >> sa ->rd
 	sprintf(regT,"R%d", idxT);
 	sa = fromStr2Bit<RegLen>(_InstStr.substr(_startPos+3*RegLen,RegLen)).to_ulong();
 	sprintf(regSA,"#%d",sa);
-	format<<_InstructionAddr<<"\t"<<"SLL "<<regD<<", "<<regT<<", "<<regSA;
-	if (!bTrace)
-	{
-		oss<<_InstStr<<"\t"<<format.str();
-		_dAssemblyFile<<oss.str()<<endl;
-		return ;
-	}
-	_regVec[idxD] = ( _regVec[idxT] >> sa);
-	trace2File(format.str());
+	format<<"[SLL "<<regD<<", "<<regT<<", "<<regSA<<"]";
+	ParsedInst = format.str();
+	//format<<_InstructionAddr<<"\t"<<"SLL "<<regD<<", "<<regT<<", "<<regSA;
+	if (bWB)
+		_regVec[idxD]._val = ( _regVec[idxT]._val >> sa);
+	//trace2File(format.str());
 	_bJump = false;
 }
 
-void InstParser::NOP(bool bTrace)//no op
+void InstParser::NOP(bool bWB,std::string& ParsedInst)//no op
 {
 	std::stringstream oss, format;
-	format<<_InstructionAddr<<"\t"<<"NOP";
-	if (!bTrace)
-	{
-		oss<<_InstStr<<"\t"<<format.str();
-		_dAssemblyFile<<oss.str()<<endl;
-		return ;
-	}
-	trace2File(format.str());
+	format<<"[NOP]";
+	ParsedInst = format.str();
+	//format<<_InstructionAddr<<"\t"<<"NOP";
+//	trace2File(format.str());
 	_bJump = false;
 }
 
-void InstParser::JR(bool bTrace)//rs -> pc
+void InstParser::JR(bool bWB,std::string& ParsedInst)//rs -> pc
 {
 	_startPos += OpLen;
 	char regS[8];
@@ -546,19 +555,15 @@ void InstParser::JR(bool bTrace)//rs -> pc
 	idxS = fromStr2Bit<RegLen>(_InstStr.substr(_startPos,RegLen)).to_ulong();
 	sprintf(regS, "R%d",idxS);
 	std::stringstream oss, format;
-	format<<_InstructionAddr<<"\t"<<"JR "<<regS;
-	if (!bTrace)
-	{
-		oss<<_InstStr<<"\t"<<format.str();
-		_dAssemblyFile<<oss.str()<<endl;
-		return ;
-	}
-	SetDstInstAddr(_regVec[idxS] + 4);
-	trace2File(format.str());
+	format<<"[JR "<<regS<<"]";
+	ParsedInst = format.str();
+	//format<<_InstructionAddr<<"\t"<<"JR "<<regS;
+	SetDstInstAddr(_regVec[idxS]._val + 4);
+//	trace2File(format.str());
 	_bJump = true;
 }
 
-void InstParser::AND(bool bTrace)// rs AND rt -> rd
+void InstParser::AND(bool bWB,std::string& ParsedInst)// rs AND rt -> rd
 {
 	char regS[8], regT[8], regD[8];
 	int idxS, idxT, idxD;
@@ -569,19 +574,16 @@ void InstParser::AND(bool bTrace)// rs AND rt -> rd
 	sprintf(regT, "R%d",idxT);
 	idxD = fromStr2Bit<RegLen>(_InstStr.substr(_startPos+2*RegLen, RegLen)).to_ulong();
 	sprintf(regD, "R%d", idxD);
-	format<<_InstructionAddr<<"\t"<<"AND "<<regD<<", "<<regS<<", "<<regT;
-	if (!bTrace)
-	{
-		oss<<_InstStr<<"\t"<<format.str();
-		_dAssemblyFile<<oss.str()<<endl;
-		return ;
-	}
-	_regVec[idxD] = _regVec[idxS] & _regVec[idxT];
-	trace2File(format.str());
+	format<<"[AND "<<regD<<", "<<regS<<", "<<regT<<"]";
+	ParsedInst = format.str();
+	//format<<_InstructionAddr<<"\t"<<"AND "<<regD<<", "<<regS<<", "<<regT;
+	if (bWB)
+		_regVec[idxD]._val = _regVec[idxS]._val & _regVec[idxT]._val;
+//	trace2File(format.str());
 	_bJump = false;
 }
 
-void InstParser::ANDI(bool bTrace)// rs AND immediate -> rt
+void InstParser::ANDI(bool bWB,std::string& ParsedInst)// rs AND immediate -> rt
 {
 	char regS[8], regT[8], immediate[16];
 	int idxS, idxT, imme;
@@ -592,19 +594,16 @@ void InstParser::ANDI(bool bTrace)// rs AND immediate -> rt
 	sprintf(regT, "R%d",idxT);
 	imme = std::strtoul(_InstStr.substr(_startPos+2*RegLen,16).c_str(),NULL,2);
 	sprintf(immediate, "R%d", imme);
-	format<<_InstructionAddr<<"\t"<<"ANDI "<<regT<<", "<<regS<<", "<<immediate;
-	if (!bTrace)
-	{
-		oss<<_InstStr<<"\t"<<format.str();
-		_dAssemblyFile<<oss.str()<<endl;
-		return ;
-	}
-	_regVec[idxT] = _regVec[idxS] & imme;
-	trace2File(format.str());
+	format<<"[ANDI "<<regT<<", "<<regS<<", "<<immediate<<"]";
+	ParsedInst = format.str();
+	//format<<_InstructionAddr<<"\t"<<"ANDI "<<regT<<", "<<regS<<", "<<immediate;
+	if (bWB)
+		_regVec[idxT]._val = _regVec[idxS]._val & imme;
+//	trace2File(format.str());
 	_bJump = false;
 }
 
-void InstParser::OR(bool bTrace)// rs or rt -> rd
+void InstParser::OR(bool bWB,std::string& ParsedInst)// rs or rt -> rd
 {
 	char regS[8], regT[8], regD[8];
 	int idxS, idxT, idxD;
@@ -615,19 +614,16 @@ void InstParser::OR(bool bTrace)// rs or rt -> rd
 	sprintf(regT, "R%d",idxT);
 	idxD = fromStr2Bit<RegLen>(_InstStr.substr(_startPos+2*RegLen, RegLen)).to_ulong();
 	sprintf(regD, "R%d", idxD);
-	format<<_InstructionAddr<<"\t"<<"OR "<<regD<<", "<<regS<<", "<<regT;
-	if (!bTrace)
-	{
-		oss<<_InstStr<<"\t"<<format.str();
-		_dAssemblyFile<<oss.str()<<endl;
-		return ;
-	}
-	_regVec[idxD] = _regVec[idxS] | _regVec[idxT];
-	trace2File(format.str());
+	format<<"[OR "<<regD<<", "<<regS<<", "<<regT<<"]";
+	ParsedInst = format.str();
+	//format<<_InstructionAddr<<"\t"<<"OR "<<regD<<", "<<regS<<", "<<regT;
+	if (bWB)
+		_regVec[idxD]._val = _regVec[idxS]._val | _regVec[idxT]._val;
+//	trace2File(format.str());
 	_bJump = false;
 }
 
-void InstParser::ORI(bool bTrace)// rs or immediate -> rt
+void InstParser::ORI(bool bWB,std::string& ParsedInst)// rs or immediate -> rt
 {
 	char regS[8], regT[8], immediate[16];
 	int idxS, idxT, imme;
@@ -638,19 +634,16 @@ void InstParser::ORI(bool bTrace)// rs or immediate -> rt
 	sprintf(regT, "R%d",idxT);
 	imme = std::strtoul(_InstStr.substr(_startPos+2*RegLen,16).c_str(),NULL,2);
 	sprintf(immediate, "R%d", imme);
-	format<<_InstructionAddr<<"\t"<<"ORI "<<regT<<", "<<regS<<", "<<immediate;
-	if (!bTrace)
-	{
-		oss<<_InstStr<<"\t"<<format.str();
-		_dAssemblyFile<<oss.str()<<endl;
-		return ;
-	}
-	_regVec[idxT] = _regVec[idxS] | imme;
-	trace2File(format.str());
+	format<<"[ORI "<<regT<<", "<<regS<<", "<<immediate<<"]";
+	ParsedInst = format.str();
+	//format<<_InstructionAddr<<"\t"<<"ORI "<<regT<<", "<<regS<<", "<<immediate;
+	if (bWB)
+		_regVec[idxT]._val = _regVec[idxS]._val | imme;
+//	trace2File(format.str());
 	_bJump = false;
 }
 
-void InstParser::XOR(bool bTrace)// rs xor rt -> rd
+void InstParser::XOR(bool bWB,std::string& ParsedInst)// rs xor rt -> rd
 {
 	char regS[8], regT[8], regD[8];
 	int idxS, idxT, idxD;
@@ -661,19 +654,16 @@ void InstParser::XOR(bool bTrace)// rs xor rt -> rd
 	sprintf(regT, "R%d",idxT);
 	idxD = fromStr2Bit<RegLen>(_InstStr.substr(_startPos+2*RegLen, RegLen)).to_ullong();
 	sprintf(regD, "R%d", idxD);
-	format<<_InstructionAddr<<"\t"<<"XOR "<<regD<<", "<<regS<<", "<<regT;
-	if (!bTrace)
-	{
-		oss<<_InstStr<<"\t"<<format.str();
-		_dAssemblyFile<<oss.str()<<endl;
-		return ;
-	}
-	_regVec[idxD] = _regVec[idxS] ^ _regVec[idxT];
-	trace2File(format.str());
+	format<<"[XOR "<<regD<<", "<<regS<<", "<<regT<<"]";
+	ParsedInst = format.str();
+	//format<<_InstructionAddr<<"\t"<<"XOR "<<regD<<", "<<regS<<", "<<regT;
+	if (bWB)
+		_regVec[idxD]._val = _regVec[idxS]._val ^ _regVec[idxT]._val;
+//	trace2File(format.str());
 	_bJump = false;
 }
 
-void InstParser::XORI(bool bTrace)// rs xor immediate-> rt
+void InstParser::XORI(bool bWB,std::string& ParsedInst)// rs xor immediate-> rt
 {
 	char regS[8], regT[8], immediate[16];
 	int idxS, idxT, imme;
@@ -684,19 +674,16 @@ void InstParser::XORI(bool bTrace)// rs xor immediate-> rt
 	sprintf(regT, "R%d",idxT);
 	imme = std::strtoul(_InstStr.substr(_startPos+2*RegLen,16).c_str(),NULL,2);
 	sprintf(immediate, "R%d", imme);
-	format<<_InstructionAddr<<"\t"<<"XORI "<<regT<<", "<<regS<<", "<<immediate;
-	if (!bTrace)
-	{
-		oss<<_InstStr<<"\t"<<format.str();
-		_dAssemblyFile<<oss.str()<<endl;
-		return ;
-	}
-	_regVec[idxT] = _regVec[idxS] ^ imme;
-	trace2File(format.str());
+	format<<"[XORI "<<regT<<", "<<regS<<", "<<immediate<<"]";
+	ParsedInst = format.str();
+	//format<<_InstructionAddr<<"\t"<<"XORI "<<regT<<", "<<regS<<", "<<immediate;
+	if (bWB)
+		_regVec[idxT]._val = _regVec[idxS]._val ^ imme;
+//	trace2File(format.str());
 	_bJump = false;
 }
 
-void InstParser::SLT(bool bTrace)// (rs < rt ) -> rd
+void InstParser::SLT(bool bWB,std::string& ParsedInst)// (rs < rt ) -> rd
 {
 	char regS[8], regT[8], regD[8];
 	int idxS, idxT, idxD;
@@ -707,19 +694,16 @@ void InstParser::SLT(bool bTrace)// (rs < rt ) -> rd
 	sprintf(regT, "R%d",idxT);
 	idxD = fromStr2Bit<RegLen>(_InstStr.substr(_startPos+2*RegLen, RegLen)).to_ulong();
 	sprintf(regD, "R%d", idxD);
-	format<<_InstructionAddr<<"\t"<<"SLT "<<regD<<", "<<regS<<", "<<regT;
-	if (!bTrace)
-	{
-		oss<<_InstStr<<"\t"<<format.str();
-		_dAssemblyFile<<oss.str()<<endl;
-		return ;
-	}
-	_regVec[idxD] = (_regVec[idxS] < _regVec[idxT])? 1:0;
-	trace2File(format.str());
+	format<<"[SLT "<<regD<<", "<<regS<<", "<<regT<<"]";
+	ParsedInst = format.str();
+	//format<<_InstructionAddr<<"\t"<<"SLT "<<regD<<", "<<regS<<", "<<regT;
+	if (bWB)
+		_regVec[idxD]._val = (_regVec[idxS]._val < _regVec[idxT]._val)? 1:0;
+//	trace2File(format.str());
 	_bJump = false;
 }
 
-void InstParser::LW(bool bTrace)//memory[base+offset] ->rt
+void InstParser::LW(bool bWB,std::string& ParsedInst)//memory[base+offset] ->rt
 {
 	char regT[8] = {0}, regBase[8] = {0}, regOffset[16] = {0};
 	int idxT, base, offset;
@@ -730,23 +714,21 @@ void InstParser::LW(bool bTrace)//memory[base+offset] ->rt
 	sprintf(regBase, "R%d", base);
 	offset = std::strtoul(_InstStr.substr(_startPos+2*RegLen,16).c_str(),NULL,2);
 	sprintf(regOffset,"%d",offset);
-	format<<_InstructionAddr<<"\t"<<"LW "<<regT<<", "<<offset<<"("<<regBase<<")";
-	if (!bTrace)
-	{
-		oss<<_InstStr<<"\t"<<format.str();
-		_dAssemblyFile<<oss.str()<<endl;
-		return ;
+	format<<"[LW "<<regT<<", "<<offset<<"("<<regBase<<")"<<"]";
+	ParsedInst = format.str();
+	//format<<_InstructionAddr<<"\t"<<"LW "<<regT<<", "<<offset<<"("<<regBase<<")";
+	if (bWB){
+		auto it = _addr2MemData.find(_regVec[base]._val+offset);
+		if (it != _addr2MemData.end())
+		{
+			_regVec[idxT]._val = it->second;
+		}
 	}
-	auto it = _addr2MemData.find(_regVec[base]+offset);
-	if (it != _addr2MemData.end())
-	{
-		_regVec[idxT] = it->second;
-	}
-	trace2File(format.str());
+//	trace2File(format.str());
 	_bJump = false;
 }
 
-void InstParser::MUL(bool bTrace)//rs * rt -> rd
+void InstParser::MUL(bool bWB,std::string& ParsedInst)//rs * rt -> rd
 {
 	char regS[8] = {0}, regT[8] = {0}, regD[8] = {0};
 	int idxS, idxT, idxD;
@@ -757,19 +739,16 @@ void InstParser::MUL(bool bTrace)//rs * rt -> rd
 	sprintf(regS,"R%d",idxS);
 	idxT = fromStr2Bit<RegLen>(_InstStr.substr(_startPos+RegLen,RegLen)).to_ulong();
 	sprintf(regT,"R%d",idxT);
-	format<<_InstructionAddr<<"\t"<<"MUL "<<regD<<", "<<regS<<", "<<regT;
-	if (!bTrace)
-	{
-		oss<<_InstStr<<"\t"<<format.str();
-		_dAssemblyFile<<oss.str()<<endl;
-		return ;
-	}
-	_regVec[idxD] = _regVec[idxS] * _regVec[idxT];
-	trace2File(format.str());
+	format<<"[MUL "<<regD<<", "<<regS<<", "<<regT<<"]";
+	ParsedInst = format.str();
+	//format<<_InstructionAddr<<"\t"<<"MUL "<<regD<<", "<<regS<<", "<<regT;
+	if (bWB)
+		_regVec[idxD]._val = _regVec[idxS]._val * _regVec[idxT]._val;
+//	trace2File(format.str());
 	_bJump = false;
 }
 
-void InstParser::SW(bool bTrace)//rt -> memory[base+offset]
+void InstParser::SW(bool bWB,std::string& ParsedInst)//rt -> memory[base+offset]
 {
 	char regBase[8] = {0}, regT[8] = {0},regOffset[16] = {0};
 	std::stringstream oss,format;
@@ -780,33 +759,27 @@ void InstParser::SW(bool bTrace)//rt -> memory[base+offset]
 	sprintf(regBase,"R%d",idxBase);
 	idxOffset = std::strtoul(_InstStr.substr(_startPos+2*RegLen,16).c_str(),NULL,2);
 	sprintf(regOffset,"%d",idxOffset);
-	format<<_InstructionAddr<<"\t"<<"SW "<<regT<<", "<<regOffset<<"("<<regBase<<")";
-	if (!bTrace)
-	{
-		oss<<_InstStr<<"\t"<<format.str();
-		_dAssemblyFile<<oss.str()<<endl;
-		return ;
-	}
-	auto it = _addr2MemData.find(_regVec[idxBase] + idxOffset);
-	if (it != _addr2MemData.end())
-	{
-		it->second = _regVec[idxT];
+	format<<"[SW "<<regT<<", "<<regOffset<<"("<<regBase<<")"<<"]";
+	ParsedInst = format.str();
+	//format<<_InstructionAddr<<"\t"<<"SW "<<regT<<", "<<regOffset<<"("<<regBase<<")";
+	if (bWB){
+		auto it = _addr2MemData.find(_regVec[idxBase]._val + idxOffset);
+		if (it != _addr2MemData.end())
+		{
+			it->second = _regVec[idxT]._val;
+		}
 	}
 	_bJump = false;
-	trace2File(format.str());
+//	trace2File(format.str());
 }
 
-void InstParser::BREAK(bool bTrace)
+void InstParser::BREAK(bool bWB,std::string& ParsedInst)
 {
 	std::stringstream oss,format;
-	format<<_InstructionAddr<<"\t"<<"BREAK";
-	if (!bTrace)
-	{
-		oss<<_InstStr<<"\t"<<format.str();
-		_dAssemblyFile<<oss.str()<<endl;
-		return ;
-	}
-	trace2File(format.str());
+	format<<"[BREAK]";
+	ParsedInst = format.str();
+	//format<<_InstructionAddr<<"\t"<<"BREAK";
+//	trace2File(format.str());
 	_bFinished = true;
 }
 
