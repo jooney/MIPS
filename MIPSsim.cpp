@@ -265,6 +265,12 @@ void InstParser::trace2File(const std::string& format)
 	//Post-MEM Queue
 	tmpqu = _postMemqu;
 	_traceFile<<"Post-MEM Queue: "<<lambda()<<endl;
+	//Pre-ALU2 Queue
+	tmpqu = _preAlu2qu;
+	_traceFile<<"Pre-ALU2 Queue: "<<endl<<"\tEntry 0:"<<lambda()<<endl<<"\tEntry 2: "<<lambda()<<endl;
+	//Post-ALU2 Queue
+	tmpqu = _postAlu2qu;
+	_traceFile<<"Post-ALU2 Queue: "<<lambda()<<endl<<endl;
 	_traceFile<<"Registers";
 	for (auto it = _regVec.begin(); it != _regVec.end();++it)
 	{
