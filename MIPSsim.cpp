@@ -7,7 +7,9 @@
 #include <map>
 #include <memory>
 #include <bitset>
+#include <set>
 #include <queue>
+#include <vector>
 #include <functional>
 #include <assert.h>
 using std::endl;
@@ -20,6 +22,8 @@ class InstParser
 		{
 			std::string _waitingInst;
 			std::string _executedInst;
+			std::vector<int> srcIdx;
+			int         branchAddr;
 			bool        _bStalled;  //the fetch unit can be stalled due to a branch instruction
 			IFUnit()
 				:_waitingInst(""),_executedInst(""),_bStalled(false){}
@@ -33,7 +37,14 @@ class InstParser
 			bool  _bTobeWrite;
 			bool  _bTobeRead;
 			RegInfo()
-				:_bWrite(false),_bRead(false),_bTobeWrite(false),_bTobeRead(false){}
+				:_bWrite(false),_bRead(false),_bTobeWrite(false),_bTobeRead(false),_val(0){}
+		};
+		struct RegIdx
+		{
+			int dstIdx;
+			int srcNum;
+			std::vector<int> srcIdx;
+			RegIdx():srcNum(0){}
 		};
 	public:
 		InstParser(const char* filename);
@@ -44,15 +55,19 @@ class InstParser
 		void ParseDataInst();
 		void ParseInst();
 		void ParseEachInst(bool,std::string& ParsedInst);
-		void DoPipeLine();
+		void DoPipeLine(std::queue<std::pair<int,std::string>>&);
 		bool bBreakInst(const std::string& inst);
-		void trace2File(const std::string& format);
+		void trace2File();
+		void IssueInstruction();
+		bool IsBranchInst(std::string&);
+		bool IsSWInst(std::string&);
+		bool IsLWInst(std::string&);
 		inline bool Finished()const {return _bFinished;} 
 		inline bool Jump() const {return _bJump;}
-		inline bool CanFetchNextInst()const {return !IsPreIssueQuFull() && !_IfUnit.IsStalled();}
+		inline bool CanFetchNextInst(const size_t sz)const {return !IsPreIssueQuFull(sz) && !_IfUnit.IsStalled();}
 		inline bool Branch1(const std::string& buf) const {return ('0' == buf[0] && '1' == buf[1])? true:false;}
 		inline bool Branch2(const std::string& buf) const {return ('1' == buf[0] && '1' == buf[1])? true:false;};
-		inline bool IsPreIssueQuFull() const {return _preIssuequ.size() >= PreQuSize;};
+		inline bool IsPreIssueQuFull(const size_t sz) const {return _preIssuequ.size() + sz >= PreQuSize;};
 		template <size_t N>
 		inline std::bitset<N> fromStr2Bit(const std::string& buf) const {return std::bitset<N>(buf);}
 		inline void SetDstInstAddr(int dstInstAddr){_dstInstAddr = dstInstAddr;}
@@ -100,6 +115,10 @@ class InstParser
 		bool                      _bJump;
 		int                       _dstInstAddr;
 		IFUnit                    _IfUnit;
+		typedef std::set<std::string> BRANCHSET;
+		const BRANCHSET   _branchSet = {"J","JR","BEQ","BLTZ","BGTZ"};
+		typedef std::map<int,RegIdx> ADDR2REGIDX;
+		ADDR2REGIDX _addr2RegIdx;
 		typedef std::map<int,int> ADDR2MEMDATA;
 		ADDR2MEMDATA  _addr2MemData;
 		std::vector<RegInfo>  _regVec;
@@ -157,14 +176,35 @@ void InstParser::instParse()
 	_traceFile.close();
 }
 
+bool InstParser::IsBranchInst(std::string& inst)
+{
+	size_t pos = inst.find(" ");
+	std::string sub = inst.substr(1,pos-1);
+	auto it = _branchSet.find(sub);
+	return it != _branchSet.end() ? true:false;
+}
+bool InstParser::IsSWInst(std::string& inst)
+{
+	size_t pos = inst.find(" ");
+	std::string sub = inst.substr(1,pos-1);
+	return sub.compare("SW") == 0 ? true : false;
+}
+bool InstParser::IsLWInst(std::string& inst)
+{
+	size_t pos = inst.find(" ");
+	std::string sub = inst.substr(1,pos-1);
+	return sub.compare("LW") == 0 ? true : false;
+}
 void InstParser::ParseInst()
 {
-	bool bPipe = false;std::string ParsedInst("");
+	bool bFirstIsBranch = false;
+	std::string ParsedInst("");
+	std::queue<std::pair<int,std::string>> tmpqu;
 	int nFetchTimes = 0; //each time IFunit has most 2 times to fetch inst
 	auto it = _addr2OpInst.begin();
 	while (it != _addr2OpInst.end() && !Finished()) //simulationfile
 	{
-		while (CanFetchNextInst() && nFetchTimes < 2 )
+		while (CanFetchNextInst(nFetchTimes + 1) && nFetchTimes < 2 )
 		{
 			if (Jump())
 			{
@@ -175,19 +215,167 @@ void InstParser::ParseInst()
 			_InstStr = it->second;
 			assert(InstLen == _InstStr.length());
 			ParseEachInst(false,ParsedInst);
+			if (IsBranchInst(ParsedInst))
+			{
+				if (nFetchTimes == 0)
+					bFirstIsBranch = true;
+				_IfUnit._waitingInst = ParsedInst;
+				_IfUnit.branchAddr = _InstructionAddr;
+			}
+			else if (!bFirstIsBranch){
+				tmpqu.push(std::make_pair(_InstructionAddr,ParsedInst));
+			}
 			nFetchTimes ++;
 			it ++;
-			_preIssuequ.push(std::make_pair(_InstructionAddr,ParsedInst));
 		}
-		DoPipeLine();
+		DoPipeLine(tmpqu);
 		nFetchTimes = 0;
+		bFirstIsBranch = false;
 	}
 }
-
-void InstParser::DoPipeLine()
+void InstParser::DoPipeLine(std::queue<std::pair<int,std::string>>& tmpqu)
 {
+	//from bottom to top to process pipeline 
+	if (!_postAlu2qu.empty()) //Post-ALU2 Queue -> WB
+	{
+		std::string ParsedInst;
+		int dstAddr = _postAlu2qu.front().first;	
+		auto it  = _addr2OpInst.find(dstAddr);
+		_InstStr = it->second; //current instruction which to be executed and write result back
+		ParseEachInst(true,ParsedInst);
+		_postAlu2qu.pop();
+	}
+	if (!_postMemqu.empty()) //Post-MEM queue -> WB 
+	{
+		std::string ParsedInst;
+		int dstAddr = _postMemqu.front().first;
+		auto it = _addr2OpInst.find(dstAddr);
+		_InstStr = it->second;//current instruction which to be executed and write back to memory
+		ParseEachInst(true,ParsedInst);
+		_postMemqu.pop();
+	}
+	if (!_preAlu2qu.empty()) // Pre-ALU2 Queue -> Post-ALU2 Queue
+	{
+		auto it = _preAlu2qu.front();
+		_postAlu2qu.push(it);
+		_preAlu2qu.pop();
+	}
+	if (!_preAlu1qu.empty()) //Pre-ALU1 Queue -> Pre-MEM Queue
+	{
+		auto it = _preAlu1qu.front();
+		_preMemqu.push(it);
+		_preAlu1qu.pop();
+	}
+	if (!_preMemqu.empty())  //Pre-MEM Queue -> Post-MEM Queue or finish
+	{
+		std::string inst = _preMemqu.front().second;
+		if (IsSWInst(inst)) //write back to memory
+		{
+			int dstAddr = _preMemqu.front().first;
+			auto it = _addr2OpInst.find(dstAddr);
+			_InstStr = it->second;
+			ParseEachInst(true,inst);
+		}
+		else if (IsLWInst(inst)) // Pre-MEM Queue -> Post-MEM Queue
+		{
+			auto it = _preMemqu.front();
+			_postMemqu.push(it);
+			_preMemqu.pop();
+		}
+		_preMemqu.pop();
+	}
+	//from Pre-Issue Queue -> Pre-ALU2 Queue & Pre-ALU1 Queue
+	IssueInstruction();
+	while (!tmpqu.empty())
+	{
+		auto it = tmpqu.front();
+		_preIssuequ.push(it);
+		tmpqu.pop();
+	}
+	trace2File();
 }
-void InstParser::ParseEachInst(bool bWB,std::string& ParsedInst)
+void InstParser::IssueInstruction()
+{
+	int  branch1, branch2, instAddr,i,qusize = _preIssuequ.size(), n = 0;
+	std::string ParsedInst;
+	bool bCondDst, bCondSrc, bFinish = false;
+	branch1 = branch2 = 0;
+	bCondDst= bCondSrc = false;
+	while (n++ < qusize)
+	{
+		auto it = _preIssuequ.front();
+		instAddr = it.first;
+		ParsedInst = it.second;
+		auto regidx = _addr2RegIdx.find(instAddr);
+		// it can issue at most 2 instructions each cycle, but 1 instruction each type,for 2 type
+		if ( (IsLWInst(ParsedInst) || IsSWInst(ParsedInst)) && (branch1 < 1) )
+		{
+			branch1 ++;
+			//TODO
+		}
+		else if ((!IsLWInst(ParsedInst) && !IsSWInst(ParsedInst) && (branch2 < 1)))
+		{
+			if (!_regVec[regidx->second.dstIdx]._bWrite && !_regVec[regidx->second.dstIdx]._bTobeWrite)	
+			{
+				_regVec[regidx->second.dstIdx]._bTobeWrite = true;
+				bCondDst = true;
+			}
+			i = 0;
+			bCondSrc = true;
+			while (i < regidx->second.srcNum)
+			{
+				if (_regVec[regidx->second.srcIdx[i]]._bWrite ||     //src register is occupied and can't read
+					_regVec[regidx->second.srcIdx[i]]._bTobeWrite)
+				{
+					bCondSrc = false;
+					break;
+				}
+				i++;
+			}
+			if (bCondDst && bCondSrc){ //Pre-Issue Queue -> Pre-ALU2 Queue
+				auto it = _preIssuequ.front();
+				_preAlu2qu.push(it);
+				_preIssuequ.pop();
+				_regVec[regidx->second.dstIdx]._bTobeWrite = false;
+				_regVec[regidx->second.dstIdx]._bWrite = true;
+			}
+			branch2 ++;
+		}
+	}
+	if (!_IfUnit._waitingInst.empty())
+	{
+		bCondSrc = true; // only consider regSrc
+		i = 0;
+		auto regidx = _addr2RegIdx.find(_IfUnit.branchAddr);
+		while (i < regidx->second.srcNum)	
+		{
+			if (_regVec[regidx->second.srcIdx[i]]._bWrite || 
+				_regVec[regidx->second.srcIdx[i]]._bTobeWrite)
+			{
+				bCondSrc = false;
+				break;
+			}
+			i++;
+		}
+		if (bCondSrc) //jump condition satisfied
+		{
+			_IfUnit._executedInst = _IfUnit._waitingInst;
+			_IfUnit._waitingInst = "";
+		}
+		bFinish = true;
+		_IfUnit._bStalled = true;
+	}
+	if (!bFinish && !_IfUnit._executedInst.empty()) //execute jump instruction
+	{
+		std::string ParsedInst;
+		auto it = _addr2OpInst.find(_IfUnit.branchAddr);
+		_InstStr = it->second;//current branch instruction 
+		ParseEachInst(false,ParsedInst);
+		_IfUnit._executedInst = "";
+		_IfUnit._bStalled = false;
+	}
+}
+void InstParser::ParseEachInst(bool bWB, std::string& ParsedInst)
 {
 	_startPos = 0;
 	_startPos += BranchLen ;
@@ -230,7 +418,7 @@ void InstParser::ParseDataInst()
 		oss.str("");
 	}
 }
-void InstParser::trace2File(const std::string& format)
+void InstParser::trace2File()
 {
 	std::queue<std::pair<int,std::string>> tmpqu;
 	auto lambda = [&tmpqu]() ->std::string {
@@ -244,61 +432,69 @@ void InstParser::trace2File(const std::string& format)
 	int count = 0;
 	static int cycle = 1;
 	for (int i = 0; i<20;i++)
-		_traceFile<<"-";
-	_traceFile<<endl;
+		cout<<"-";
+		//_traceFile<<"-";
+	//_traceFile<<endl;
+	cout<<endl;
 	std::ostringstream oss;
-	oss<<"Cycle:"<<cycle;
-	if (cycle < 10) oss<<" "<<"\t"<<format<<endl<<endl;
-	else oss<<"\t"<<format<<endl<<endl;
-	_traceFile<<oss.str();
+	oss<<"Cycle:"<<cycle<<endl<<endl;
+	//_traceFile<<oss.str();
+	cout<<oss.str();
 	//IF Unit
-	_traceFile<<"IF Unit:"<<endl<<"\t"<<"Waiting Instruction: "<<_IfUnit._waitingInst<<endl<<"\t"<<"Executed Instruction: "<<_IfUnit._executedInst<<endl;
+	cout<<"IF Unit:"<<endl<<"\t"<<"Waiting Instruction: "<<_IfUnit._waitingInst<<endl<<"\t"<<"Executed Instruction: "<<_IfUnit._executedInst<<endl;
 	//Pre-Issus Queue
 	tmpqu = _preIssuequ;
-	_traceFile<<"Pre-Issue Queue:"<<endl<<"\tEntry 0: "<<lambda()<<endl<<"\tEntry 1: "<<lambda()<<endl<<"\tEntry 2: "<<lambda()<<endl<<"\tEntry 3: "<<lambda()<<endl;
+	cout<<"Pre-Issue Queue:"<<endl<<"\tEntry 0: "<<lambda()<<endl;
+	cout<<"\tEntry 1: "<<lambda()<<endl;
+	cout<<"\tEntry 2: "<<lambda()<<endl;
+	cout<<"\tEntry 3: "<<lambda()<<endl;
 	//Pre-Alu1 Queue
 	tmpqu = _preAlu1qu;
-	_traceFile<<"Pre-ALU1 Queue:"<<endl<<"\tEntry 0: "<<lambda()<<endl<<"\tEntry 1: "<<lambda()<<endl;
+	cout<<"Pre-ALU1 Queue:"<<endl<<"\tEntry 0: "<<lambda()<<endl;
+	cout<<"\tEntry 1: "<<lambda()<<endl;
 	//Pre-MEM Queue
 	tmpqu = _preMemqu;
-	_traceFile<<"Pre-MEM Queue: "<<lambda()<<endl;
+	cout<<"Pre-MEM Queue: "<<lambda()<<endl;
 	//Post-MEM Queue
 	tmpqu = _postMemqu;
-	_traceFile<<"Post-MEM Queue: "<<lambda()<<endl;
+	cout<<"Post-MEM Queue: "<<lambda()<<endl;
 	//Pre-ALU2 Queue
 	tmpqu = _preAlu2qu;
-	_traceFile<<"Pre-ALU2 Queue: "<<endl<<"\tEntry 0:"<<lambda()<<endl<<"\tEntry 2: "<<lambda()<<endl;
+	cout<<"Pre-ALU2 Queue: "<<endl<<"\tEntry 0:"<<lambda()<<endl;
+	cout<<"\tEntry 1: "<<lambda()<<endl;
 	//Post-ALU2 Queue
 	tmpqu = _postAlu2qu;
-	_traceFile<<"Post-ALU2 Queue: "<<lambda()<<endl<<endl;
-	_traceFile<<"Registers";
+	cout<<"Post-ALU2 Queue: "<<lambda()<<endl<<endl;
+	cout<<"Registers";
 	for (auto it = _regVec.begin(); it != _regVec.end();++it)
 	{
 		if (count % 8 == 0)
 		{
-			_traceFile<<endl<<"R";
-			_traceFile.setf(std::ios::right);
-			_traceFile.fill('0');
-			_traceFile.width(2);
-			_traceFile<<count<<":\t";
+			cout<<endl<<"R";
+			cout.setf(std::ios::right);
+			cout.fill('0');
+			cout.width(2);
+			cout<<count<<":\t";
 		}
-		_traceFile<<it->_val<<"\t";
+		cout<<it->_val<<"\t";
 		count++;
 	}
-	_traceFile<<endl<<endl;
+	cout<<endl<<endl;
 	count = 0;
-	_traceFile<<"Data";
+	cout<<"Data";
 	for (auto it = _addr2MemData.begin(); it != _addr2MemData.end(); ++it)
 	{
 		if (count % 8 == 0)
 		{
-			_traceFile<<endl<<it->first<<":\t";
+			cout<<endl<<it->first<<":\t";
 		}
-		_traceFile<<it->second<<"\t";
+		cout<<it->second<<"\t";
 		count++;
 	}
-	_traceFile<<endl<<endl;
+	cout<<endl<<endl;
 	cycle ++;
+	if (cycle == 7)
+		std::exit(0);
 }
 
 void InstParser::ADD(bool bWB,std::string& ParsedInst)//(rs) +(rt) -> (rd)
@@ -314,11 +510,17 @@ void InstParser::ADD(bool bWB,std::string& ParsedInst)//(rs) +(rt) -> (rd)
 	sprintf(regT, "R%d", idxT);
 	format<<"[ADD "<<regD<<", "<<regS<<", "<<regT<<"]";
 	ParsedInst = format.str();
-	//format<<_InstructionAddr<<"\t"<<"ADD "<<regD<<", "<<regS<<", "<<regT;
-	if (bWB)
+	if (bWB){
 		_regVec[idxD]._val = _regVec[idxS]._val + _regVec[idxT]._val;
+		_regVec[idxD]._bWrite = false; _regVec[idxS]._bRead = false; _regVec[idxT]._bRead = false;
+	}
+	else{
+		RegIdx regidx;
+		regidx.dstIdx = idxD; regidx.srcIdx.push_back(idxS); regidx.srcIdx.push_back(idxT);
+		regidx.srcNum = 2;
+		_addr2RegIdx.insert(std::make_pair(_InstructionAddr,regidx));
+	}
 	_bJump = false;
-	//trace2File(format.str());
 }
 
 void InstParser::NOR(bool bWB,std::string& ParsedInst)// rs NOR rt -> (rd)
@@ -378,6 +580,11 @@ void InstParser::ADDI(bool bWB,std::string& ParsedInst)//rs + immediate -> rt
 	int immed = std::strtoul(_InstStr.substr(_startPos+2*RegLen,16).c_str(),NULL,2);
 	if (bWB)
 		_regVec[idxT]._val = _regVec[idxS]._val + immed;
+	else{
+		RegIdx regidx;
+		regidx.dstIdx = idxT; regidx.srcIdx.push_back(idxS); regidx.srcNum = 1;
+		_addr2RegIdx.insert(std::make_pair(_InstructionAddr,regidx));
+	}
 	_bJump = false;
 //	trace2File(format.str());
 }
@@ -407,7 +614,11 @@ void InstParser::BEQ(bool bWB,std::string& ParsedInst)//if rs = rt then branch
 			_bJump = false;
 		}
 	}
-//	trace2File(format.str());
+	else{
+		RegIdx regidx ;
+		regidx.srcIdx.push_back(idxS); regidx.srcIdx.push_back(idxT);regidx.srcNum = 2;
+		_addr2RegIdx.insert(std::make_pair(_InstructionAddr,regidx));
+	}
 }
 
 void InstParser::BLTZ(bool bWB,std::string& ParsedInst)// if rs < 0 , then  branch
