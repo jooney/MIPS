@@ -127,7 +127,7 @@ class InstParser
 		int                       _dstInstAddr;
 		IFUnit                    _IfUnit;
 		typedef std::set<std::string> BRANCHSET;
-		const BRANCHSET   _branchSet = {"J","JR","BEQ","BLTZ","BGTZ","BREAK"};
+		const BRANCHSET   _branchSet = {"J","JR","BEQ","BLTZ","BGTZ","BREAK","NOP"};
 		typedef std::map<int,RegIdx> ADDR2REGIDX;
 		ADDR2REGIDX _addr2RegIdx;
 		typedef std::map<int,int> ADDR2MEMDATA;
@@ -190,7 +190,6 @@ void InstParser::instParse()
 bool InstParser::IsBranchInst(std::string& inst)
 {
 	size_t pos = inst.find(" ");
-//	if (std::string::npos == pos) pos = inst.length() -1;
 	pos = (pos == std::string::npos) ? inst.length()-1 : pos;
 	std::string sub = inst.substr(1,pos-1);
 	auto it = _branchSet.find(sub);
@@ -215,7 +214,6 @@ void InstParser::ParseInst()
 	std::queue<std::pair<int,std::string>> tmpqu;
 	int nFetchTimes = 0; //each time IFunit has most 2 times to fetch inst
 	auto it = _addr2OpInst.begin();
-	static int cycle = 0; //for debug only
 	while (it != _addr2OpInst.end() && !Finished()) //simulationfile
 	{
 		size_t qusize = _preIssuequ.size();
@@ -246,7 +244,6 @@ void InstParser::ParseInst()
 			nFetchTimes ++;
 			it ++;
 		}
-		cycle ++;
 		DoPipeLine(tmpqu);
 		nFetchTimes = 0;
 		bFirstIsBranch = false;
@@ -255,7 +252,6 @@ void InstParser::ParseInst()
 void InstParser::DoPipeLine(std::queue<std::pair<int,std::string>>& tmpqu)
 {
 	//from bottom to top to process pipeline 
-	static int cycle = 1;
 	DoJumpInst();
 	RestoreRegisterTag();
 	if (!_postAlu2qu.empty()) //Post-ALU2 Queue -> WBqueue
@@ -312,8 +308,6 @@ void InstParser::DoPipeLine(std::queue<std::pair<int,std::string>>& tmpqu)
 		tmpqu.pop();
 	}
 	trace2File();
-	cycle++;
-//	RestoreRegisterTag();
 }
 void InstParser::SetInstIssued(std::pair<int,std::string>& it)
 {
@@ -337,11 +331,9 @@ void InstParser::DoJumpInst()
 }
 void InstParser::IssueInstruction()
 {
-//	cout<<"reg[5]: "<<_regVec[5]._bWrite<<endl;
 	int  branch1, branch2, instAddr,i;
 	std::string ParsedInst;
 	bool bCondDst, bCondSrc;
-	static int cycle = 1; //for debug only
 	std::vector<std::pair<int,std::string>> tmpvec;
 	while (!_preIssuequ.empty())//because we can't use queue to bianli, so use vector instead
 	{
@@ -364,8 +356,7 @@ void InstParser::IssueInstruction()
 			if ( regidx->second.dstNum > 0 &&
 				(!_regVec[regidx->second.dstIdx]._bWrite &&  //WAW
 				!_regVec[regidx->second.dstIdx]._bTobeWrite &&  //WAW 
-				!_regVec[regidx->second.dstIdx]._bTobeRead)  //WAR
-				/*!_regVec[regidx->second.dstIdx]._bRead*/) //WAR
+				!_regVec[regidx->second.dstIdx]._bTobeRead) ) //WAR
 			{
 				_regVec[regidx->second.dstIdx]._bTobeWrite = true;
 				_regVec[regidx->second.dstIdx]._tobewriteowner = instAddr;
@@ -421,8 +412,7 @@ void InstParser::IssueInstruction()
 		{
 			if (!_regVec[regidx->second.dstIdx]._bWrite &&  //WAW
 				!_regVec[regidx->second.dstIdx]._bTobeWrite && //WAW
-				!_regVec[regidx->second.dstIdx]._bTobeRead	// WAR
-				/*!_regVec[regidx->second.dstIdx]._bRead*/)	// WAR
+				!_regVec[regidx->second.dstIdx]._bTobeRead)	// WAR
 			{
 				_regVec[regidx->second.dstIdx]._bTobeWrite = true;
 				_regVec[regidx->second.dstIdx]._tobewriteowner = instAddr;
@@ -508,7 +498,6 @@ void InstParser::IssueInstruction()
 			ParseEachInst(true,ParsedInst);
 		}
 	}
-	cycle ++;
 }
 void InstParser::WriteResultBack()
 {
@@ -529,15 +518,12 @@ void InstParser::RestoreRegisterTag()
 	while (!_dstAddrqu.empty())
 	{
 		auto regidx = _addr2RegIdx.find(_dstAddrqu.front());
-//		_regVec[regidx->second.dstIdx]._owner = 0;
 		_regVec[regidx->second.dstIdx]._bWrite = false;
 		_regVec[regidx->second.dstIdx]._bIssued = false;
-	//	cout<<"set Register: "<<regidx->second.dstIdx<<" _bwrite = false"<<endl;
 		for (int i = 0;i < regidx->second.srcNum;i++)
 		{
 			_regVec[regidx->second.srcIdx[i]]._bRead = false;
 			_regVec[regidx->second.srcIdx[i]]._bIssued = false;
-		//	_regVec[regidx->second.srcIdx[i]]._owner = 0 ;
 		}
 		_dstAddrqu.pop();	
 	}
@@ -599,69 +585,64 @@ void InstParser::trace2File()
 	int count = 0;
 	static int cycle = 1;
 	for (int i = 0; i<20;i++)
-		cout<<"-";
-	//_traceFile<<"-";
-	//_traceFile<<endl;
-	cout<<endl;
+		_traceFile<<"-"; 
+	_traceFile<<endl;
 	std::ostringstream oss;
 	oss<<"Cycle:"<<cycle<<endl<<endl;
-	//_traceFile<<oss.str();
-	cout<<oss.str();
+	_traceFile<<oss.str();
 	//IF Unit
-	cout<<"IF Unit:"<<endl<<"\t"<<"Waiting Instruction: "<<_IfUnit._waitingInst<<endl<<"\t"<<"Executed Instruction: "<<_IfUnit._executedInst<<endl;
+	_traceFile<<"IF Unit:"<<endl<<"\t"<<"Waiting Instruction: "<<_IfUnit._waitingInst<<endl<<"\t"<<"Executed Instruction: "<<_IfUnit._executedInst<<endl;
 	//Pre-Issus Queue
 	tmpqu = _preIssuequ;
-	cout<<"Pre-Issue Queue:"<<endl<<"\tEntry 0: "<<lambda()<<endl;
-	cout<<"\tEntry 1: "<<lambda()<<endl;
-	cout<<"\tEntry 2: "<<lambda()<<endl;
-	cout<<"\tEntry 3: "<<lambda()<<endl;
+	_traceFile<<"Pre-Issue Queue:"<<endl<<"\tEntry 0: "<<lambda()<<endl;
+	_traceFile<<"\tEntry 1: "<<lambda()<<endl;
+	_traceFile<<"\tEntry 2: "<<lambda()<<endl;
+	_traceFile<<"\tEntry 3: "<<lambda()<<endl;
 	//Pre-Alu1 Queue
 	tmpqu = _preAlu1qu;
-	cout<<"Pre-ALU1 Queue:"<<endl<<"\tEntry 0: "<<lambda()<<endl;
-	cout<<"\tEntry 1: "<<lambda()<<endl;
+	_traceFile<<"Pre-ALU1 Queue:"<<endl<<"\tEntry 0: "<<lambda()<<endl;
+	_traceFile<<"\tEntry 1: "<<lambda()<<endl;
 	//Pre-MEM Queue
 	tmpqu = _preMemqu;
-	cout<<"Pre-MEM Queue: "<<lambda()<<endl;
+	_traceFile<<"Pre-MEM Queue: "<<lambda()<<endl;
 	//Post-MEM Queue
 	tmpqu = _postMemqu;
-	cout<<"Post-MEM Queue: "<<lambda()<<endl;
+	_traceFile<<"Post-MEM Queue: "<<lambda()<<endl;
 	//Pre-ALU2 Queue
 	tmpqu = _preAlu2qu;
-	cout<<"Pre-ALU2 Queue: "<<endl<<"\tEntry 0:"<<lambda()<<endl;
-	cout<<"\tEntry 1: "<<lambda()<<endl;
+	_traceFile<<"Pre-ALU2 Queue: "<<endl<<"\tEntry 0:"<<lambda()<<endl;
+	_traceFile<<"\tEntry 1: "<<lambda()<<endl;
 	//Post-ALU2 Queue
 	tmpqu = _postAlu2qu;
-	cout<<"Post-ALU2 Queue: "<<lambda()<<endl<<endl;
-	cout<<"Registers";
+	_traceFile<<"Post-ALU2 Queue: "<<lambda()<<endl<<endl;
+	_traceFile<<"Registers";
 	for (auto it = _regVec.begin(); it != _regVec.end();++it)
 	{
 		if (count % 8 == 0)
 		{
-			cout<<endl<<"R";
-			cout.setf(std::ios::right);
-			cout.fill('0');
-			cout.width(2);
-			cout<<count<<":\t";
+			_traceFile<<endl<<"R";
+			_traceFile.setf(std::ios::right);
+			_traceFile.fill('0');
+			_traceFile.width(2);
+			_traceFile<<count<<":\t";
 		}
-		cout<<it->_val<<"\t";
+		_traceFile<<it->_val<<"\t";
 		count++;
 	}
-	cout<<endl<<endl;
+	_traceFile<<endl<<endl;
 	count = 0;
-	cout<<"Data";
+	_traceFile<<"Data";
 	for (auto it = _addr2MemData.begin(); it != _addr2MemData.end(); ++it)
 	{
 		if (count % 8 == 0)
 		{
-			cout<<endl<<it->first<<":\t";
+			_traceFile<<endl<<it->first<<":\t";
 		}
-		cout<<it->second<<"\t";
+		_traceFile<<it->second<<"\t";
 		count++;
 	}
-	cout<<endl<<endl;
+	_traceFile<<endl<<endl;
 	cycle ++;
-	if (cycle == 31) //19
-		std::exit(0);
 }
 
 void InstParser::ADD(bool bWB,std::string& ParsedInst)//(rs) +(rt) -> (rd)
@@ -722,6 +703,12 @@ void InstParser::SUB(bool bWB,std::string& ParsedInst)//rs - rt -> rd
 	ParsedInst = format.str();
 	if (bWB)
 		_regVec[idxD]._val = _regVec[idxS]._val - _regVec[idxT]._val;
+	else{
+		RegIdx regidx;
+		regidx.dstIdx = idxD; regidx.srcIdx.push_back(idxS); regidx.srcIdx.push_back(idxT);
+		regidx.srcNum = 2; regidx.dstNum = 1;
+		_addr2RegIdx.insert(std::make_pair(_InstructionAddr,regidx));
+	}
 	_bJump = false;
 }
 
@@ -764,7 +751,6 @@ void InstParser::BEQ(bool bWB,std::string& ParsedInst)//if rs = rt then branch
 	sprintf(immediate, "#%d",offset);
 	format<<"[BEQ "<<regS<<", "<<regT<<", "<<immediate<<"]";
 	ParsedInst = format.str();
-	//format<<_InstructionAddr<<"\t"<<"BEQ "<<regS<<", "<<regT<<", "<<immediate;
 	if (bWB){
 		if (_regVec[idxS]._val == _regVec[idxT]._val)
 		{
@@ -794,7 +780,6 @@ void InstParser::BLTZ(bool bWB,std::string& ParsedInst)// if rs < 0 , then  bran
 	sprintf(regOffset,"#%d",offset);
 	format<<"[BLTZ "<<regS<<", "<<regOffset<<"]";
 	ParsedInst = format.str();
-	//format<<_InstructionAddr<<"\t"<<"BLTZ "<<regS<<", "<<regOffset;
 	if (bWB){
 		if (_regVec[idxS]._val < 0)
 		{
@@ -805,7 +790,11 @@ void InstParser::BLTZ(bool bWB,std::string& ParsedInst)// if rs < 0 , then  bran
 			_bJump = false;
 		}
 	}
-	//	trace2File(format.str());
+	else{
+		RegIdx regidx ;
+		regidx.srcIdx.push_back(idxS);regidx.srcNum = 1;
+		_addr2RegIdx.insert(std::make_pair(_InstructionAddr,regidx));
+	}
 }
 
 void InstParser::J(bool bWB,std::string& ParsedInst)//offset -> pc
@@ -819,7 +808,6 @@ void InstParser::J(bool bWB,std::string& ParsedInst)//offset -> pc
 	sprintf(instr_index,"#%lu",InstrSet.to_ulong());
 	format<<"[J "<<instr_index<<"]";
 	ParsedInst = format.str();
-	//format<<_InstructionAddr<<"\t"<<"J "<<instr_index;
 	SetDstInstAddr(InstrSet.to_ulong()); // modify pc
 	RegIdx regidx; regidx.srcNum = 0;
 	_addr2RegIdx.insert(std::make_pair(_InstructionAddr,regidx));
@@ -839,7 +827,6 @@ void InstParser::BGTZ(bool bWB,std::string& ParsedInst)//if rs > 0 then branch
 	sprintf(regOffset, "#%d", offset);
 	format<<"[BGTZ "<<regS<<", "<<regOffset<<"]";
 	ParsedInst = format.str();
-	//format<<_InstructionAddr<<"\t"<<"BGTZ "<<regS<<", "<<regOffset;
 	if (bWB){
 		if (_regVec[idxS]._val > 0)
 		{
@@ -849,7 +836,11 @@ void InstParser::BGTZ(bool bWB,std::string& ParsedInst)//if rs > 0 then branch
 			_bJump = false;
 		}
 	}
-	//trace2File(format.str());
+	else{
+		RegIdx regidx ;
+		regidx.srcIdx.push_back(idxS);regidx.srcNum = 1;
+		_addr2RegIdx.insert(std::make_pair(_InstructionAddr,regidx));
+	}
 }
 
 void InstParser::SLL(bool bWB,std::string& ParsedInst)//rt << sa -> rd
@@ -890,13 +881,17 @@ void InstParser::SRL(bool bWB,std::string& ParsedInst) //logical shift right //r
 	sprintf(regSA,"#%d",sa);
 	format<<"[SLL "<<regD<<", "<<regT<<", "<<regSA<<"]";
 	ParsedInst = format.str();
-	//format<<_InstructionAddr<<"\t"<<"SLL "<<regD<<", "<<regT<<", "<<regSA;
 	if (bWB)
 	{
 		unsigned int tmp = _regVec[idxT]._val;
 		_regVec[idxD]._val = (tmp >> sa);
 	}
-	//	trace2File(format.str());
+	else 
+	{
+		RegIdx regidx;
+		regidx.dstIdx = idxD;regidx.srcIdx.push_back(idxT);regidx.srcNum = 1;regidx.dstNum = 1;
+		_addr2RegIdx.insert(std::make_pair(_InstructionAddr,regidx));
+	}
 	_bJump = false;
 }
 
@@ -913,10 +908,14 @@ void InstParser::SRA(bool bWB,std::string& ParsedInst) //arighmetic shift right 
 	sprintf(regSA,"#%d",sa);
 	format<<"[SLL "<<regD<<", "<<regT<<", "<<regSA<<"]";
 	ParsedInst = format.str();
-	//format<<_InstructionAddr<<"\t"<<"SLL "<<regD<<", "<<regT<<", "<<regSA;
 	if (bWB)
 		_regVec[idxD]._val = ( _regVec[idxT]._val >> sa);
-	//trace2File(format.str());
+	else 
+	{
+		RegIdx regidx;
+		regidx.dstIdx = idxD;regidx.srcIdx.push_back(idxT);regidx.srcNum = 1;regidx.dstNum = 1;
+		_addr2RegIdx.insert(std::make_pair(_InstructionAddr,regidx));
+	}
 	_bJump = false;
 }
 
@@ -925,8 +924,8 @@ void InstParser::NOP(bool bWB,std::string& ParsedInst)//no op
 	std::stringstream oss, format;
 	format<<"[NOP]";
 	ParsedInst = format.str();
-	//format<<_InstructionAddr<<"\t"<<"NOP";
-	//	trace2File(format.str());
+	RegIdx regidx; regidx.srcNum = 0;
+	_addr2RegIdx.insert(std::make_pair(_InstructionAddr,regidx));
 	_bJump = false;
 }
 
@@ -940,9 +939,9 @@ void InstParser::JR(bool bWB,std::string& ParsedInst)//rs -> pc
 	std::stringstream oss, format;
 	format<<"[JR "<<regS<<"]";
 	ParsedInst = format.str();
-	//format<<_InstructionAddr<<"\t"<<"JR "<<regS;
 	SetDstInstAddr(_regVec[idxS]._val + 4);
-	//	trace2File(format.str());
+	RegIdx regidx; regidx.srcNum = 0;
+	_addr2RegIdx.insert(std::make_pair(_InstructionAddr,regidx));
 	_bJump = true;
 }
 
@@ -959,10 +958,14 @@ void InstParser::AND(bool bWB,std::string& ParsedInst)// rs AND rt -> rd
 	sprintf(regD, "R%d", idxD);
 	format<<"[AND "<<regD<<", "<<regS<<", "<<regT<<"]";
 	ParsedInst = format.str();
-	//format<<_InstructionAddr<<"\t"<<"AND "<<regD<<", "<<regS<<", "<<regT;
 	if (bWB)
 		_regVec[idxD]._val = _regVec[idxS]._val & _regVec[idxT]._val;
-	//	trace2File(format.str());
+	else{
+		RegIdx regidx;
+		regidx.dstIdx = idxD; regidx.srcIdx.push_back(idxS); regidx.srcIdx.push_back(idxT);
+		regidx.srcNum = 2; regidx.dstNum = 1;
+		_addr2RegIdx.insert(std::make_pair(_InstructionAddr,regidx));
+	}
 	_bJump = false;
 }
 
@@ -979,10 +982,14 @@ void InstParser::ANDI(bool bWB,std::string& ParsedInst)// rs AND immediate -> rt
 	sprintf(immediate, "R%d", imme);
 	format<<"[ANDI "<<regT<<", "<<regS<<", "<<immediate<<"]";
 	ParsedInst = format.str();
-	//format<<_InstructionAddr<<"\t"<<"ANDI "<<regT<<", "<<regS<<", "<<immediate;
 	if (bWB)
 		_regVec[idxT]._val = _regVec[idxS]._val & imme;
-	//	trace2File(format.str());
+	else{
+		RegIdx regidx;
+		regidx.dstIdx = idxT; regidx.srcIdx.push_back(idxT); regidx.srcIdx.push_back(idxS);
+		regidx.srcNum = 1; regidx.dstNum = 1;
+		_addr2RegIdx.insert(std::make_pair(_InstructionAddr,regidx));
+	}
 	_bJump = false;
 }
 
@@ -999,10 +1006,14 @@ void InstParser::OR(bool bWB,std::string& ParsedInst)// rs or rt -> rd
 	sprintf(regD, "R%d", idxD);
 	format<<"[OR "<<regD<<", "<<regS<<", "<<regT<<"]";
 	ParsedInst = format.str();
-	//format<<_InstructionAddr<<"\t"<<"OR "<<regD<<", "<<regS<<", "<<regT;
 	if (bWB)
 		_regVec[idxD]._val = _regVec[idxS]._val | _regVec[idxT]._val;
-	//	trace2File(format.str());
+	else{
+		RegIdx regidx;
+		regidx.dstIdx = idxD; regidx.srcIdx.push_back(idxT); regidx.srcIdx.push_back(idxS);
+		regidx.srcNum = 2; regidx.dstNum = 1;
+		_addr2RegIdx.insert(std::make_pair(_InstructionAddr,regidx));
+	}
 	_bJump = false;
 }
 
@@ -1019,10 +1030,14 @@ void InstParser::ORI(bool bWB,std::string& ParsedInst)// rs or immediate -> rt
 	sprintf(immediate, "R%d", imme);
 	format<<"[ORI "<<regT<<", "<<regS<<", "<<immediate<<"]";
 	ParsedInst = format.str();
-	//format<<_InstructionAddr<<"\t"<<"ORI "<<regT<<", "<<regS<<", "<<immediate;
 	if (bWB)
 		_regVec[idxT]._val = _regVec[idxS]._val | imme;
-	//	trace2File(format.str());
+	else{
+		RegIdx regidx;
+		regidx.dstIdx = idxT; regidx.srcIdx.push_back(idxS);
+		regidx.srcNum = 1; regidx.dstNum = 1;
+		_addr2RegIdx.insert(std::make_pair(_InstructionAddr,regidx));
+	}
 	_bJump = false;
 }
 
@@ -1039,10 +1054,14 @@ void InstParser::XOR(bool bWB,std::string& ParsedInst)// rs xor rt -> rd
 	sprintf(regD, "R%d", idxD);
 	format<<"[XOR "<<regD<<", "<<regS<<", "<<regT<<"]";
 	ParsedInst = format.str();
-	//format<<_InstructionAddr<<"\t"<<"XOR "<<regD<<", "<<regS<<", "<<regT;
 	if (bWB)
 		_regVec[idxD]._val = _regVec[idxS]._val ^ _regVec[idxT]._val;
-	//	trace2File(format.str());
+	else{
+		RegIdx regidx;
+		regidx.dstIdx = idxD; regidx.srcIdx.push_back(idxS);regidx.srcIdx.push_back(idxT);
+		regidx.srcNum = 2; regidx.dstNum = 1;
+		_addr2RegIdx.insert(std::make_pair(_InstructionAddr,regidx));
+	}
 	_bJump = false;
 }
 
@@ -1059,10 +1078,14 @@ void InstParser::XORI(bool bWB,std::string& ParsedInst)// rs xor immediate-> rt
 	sprintf(immediate, "R%d", imme);
 	format<<"[XORI "<<regT<<", "<<regS<<", "<<immediate<<"]";
 	ParsedInst = format.str();
-	//format<<_InstructionAddr<<"\t"<<"XORI "<<regT<<", "<<regS<<", "<<immediate;
 	if (bWB)
 		_regVec[idxT]._val = _regVec[idxS]._val ^ imme;
-	//	trace2File(format.str());
+	else{
+		RegIdx regidx;
+		regidx.dstIdx = idxT; regidx.srcIdx.push_back(idxS);
+		regidx.srcNum = 1; regidx.dstNum = 1;
+		_addr2RegIdx.insert(std::make_pair(_InstructionAddr,regidx));
+	}
 	_bJump = false;
 }
 
@@ -1079,10 +1102,14 @@ void InstParser::SLT(bool bWB,std::string& ParsedInst)// (rs < rt ) -> rd
 	sprintf(regD, "R%d", idxD);
 	format<<"[SLT "<<regD<<", "<<regS<<", "<<regT<<"]";
 	ParsedInst = format.str();
-	//format<<_InstructionAddr<<"\t"<<"SLT "<<regD<<", "<<regS<<", "<<regT;
 	if (bWB)
 		_regVec[idxD]._val = (_regVec[idxS]._val < _regVec[idxT]._val)? 1:0;
-	//	trace2File(format.str());
+	else{
+		RegIdx regidx;
+		regidx.dstIdx = idxD; regidx.srcIdx.push_back(idxS);regidx.srcIdx.push_back(idxT);
+		regidx.srcNum = 2; regidx.dstNum = 1;
+		_addr2RegIdx.insert(std::make_pair(_InstructionAddr,regidx));
+	}
 	_bJump = false;
 }
 
@@ -1129,6 +1156,12 @@ void InstParser::MUL(bool bWB,std::string& ParsedInst)//rs * rt -> rd
 	ParsedInst = format.str();
 	if (bWB)
 		_regVec[idxD]._val = _regVec[idxS]._val * _regVec[idxT]._val;
+	else{
+		RegIdx regidx;
+		regidx.dstIdx = idxD;regidx.srcIdx.push_back(idxS);regidx.srcIdx.push_back(idxT);
+		regidx.srcNum = 2;regidx.dstNum = 1;
+		_addr2RegIdx.insert(std::make_pair(_InstructionAddr,regidx));
+	}
 	_bJump = false;
 }
 
