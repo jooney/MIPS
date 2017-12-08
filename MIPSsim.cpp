@@ -22,7 +22,6 @@ class InstParser
 		{
 			std::string _waitingInst;
 			std::string _executedInst;
-			std::vector<int> srcIdx;
 			int         branchAddr;
 			bool        _bStalled;  //the fetch unit can be stalled due to a branch instruction
 			IFUnit()
@@ -331,6 +330,7 @@ void InstParser::DoJumpInst()
 }
 void InstParser::IssueInstruction()
 {
+	static int cycle = 1;
 	int  branch1, branch2, instAddr,i;
 	std::string ParsedInst;
 	bool bCondDst, bCondSrc;
@@ -498,6 +498,7 @@ void InstParser::IssueInstruction()
 			ParseEachInst(true,ParsedInst);
 		}
 	}
+	cycle ++;
 }
 void InstParser::WriteResultBack()
 {
