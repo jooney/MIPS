@@ -324,19 +324,7 @@ void InstParser::DoJumpInst()
 	{
 		std::string ParsedInst;
 		_InstStr = _addr2OpInst.find(_IfUnit.branchAddr)->second; //danger
-		_startPos  = 0;
-		_startPos += BranchLen;
-		std::string Opcode(_InstStr.substr(_startPos,OpLen));
-		if (Branch1(_InstStr)){
-			OPBRANCH1::iterator it = _opBranch1.find(Opcode);
-			if (it != _opBranch1.end()){
-				OP2FUNC::iterator iter = _Op2Func.find(it->second);
-				if (iter != _Op2Func.end()){
-					_startPos += OpLen;
-					(iter->second)(true,ParsedInst);
-				}
-			}
-		}
+		ParseEachInst(true,ParsedInst);
 		_IfUnit._executedInst = "";
 	}
 }
