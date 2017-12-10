@@ -612,7 +612,7 @@ void InstParser::trace2File()
 	_traceFile<<"Post-MEM Queue: "<<lambda()<<endl;
 	//Pre-ALU2 Queue
 	tmpqu = _preAlu2qu;
-	_traceFile<<"Pre-ALU2 Queue: "<<endl<<"\tEntry 0:"<<lambda()<<endl;
+	_traceFile<<"Pre-ALU2 Queue: "<<endl<<"\tEntry 0: "<<lambda()<<endl;
 	_traceFile<<"\tEntry 1: "<<lambda()<<endl;
 	//Post-ALU2 Queue
 	tmpqu = _postAlu2qu;
