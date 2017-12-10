@@ -322,7 +322,7 @@ void InstParser::DoJumpInst()
 {
 	if (!_IfUnit._executedInst.empty())
 	{
-		std::string ParsedInst,instStr;
+		std::string ParsedInst;
 		_InstStr = _addr2OpInst.find(_IfUnit.branchAddr)->second; //danger
 		_startPos  = 0;
 		_startPos += BranchLen;
