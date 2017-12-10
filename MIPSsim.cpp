@@ -216,12 +216,14 @@ void InstParser::ParseInst()
 	while (it != _addr2OpInst.end() && !Finished()) //simulationfile
 	{
 		size_t qusize = _preIssuequ.size();
+		DoJumpInst();
 		while (CanFetchNextInst(nFetchTimes + 1 + qusize) && nFetchTimes < 2 )
 		{
 			if (Jump())
 			{
 				int dstAddr = GetDstInstAddr();
 				it = _addr2OpInst.find(dstAddr);
+				_bJump = false;
 			}
 			_InstructionAddr = it->first;
 			_InstStr = it->second;
@@ -251,7 +253,6 @@ void InstParser::ParseInst()
 void InstParser::DoPipeLine(std::queue<std::pair<int,std::string>>& tmpqu)
 {
 	//from bottom to top to process pipeline 
-	DoJumpInst();
 	RestoreRegisterTag();
 	if (!_postAlu2qu.empty()) //Post-ALU2 Queue -> WBqueue
 	{
@@ -321,10 +322,21 @@ void InstParser::DoJumpInst()
 {
 	if (!_IfUnit._executedInst.empty())
 	{
-		std::string ParsedInst;
-		auto it = _addr2OpInst.find(_IfUnit.branchAddr);
-		_InstStr = it->second;//current branch instruction
-		ParseEachInst(false,ParsedInst);
+		std::string ParsedInst,instStr;
+		_InstStr = _addr2OpInst.find(_IfUnit.branchAddr)->second; //danger
+		_startPos  = 0;
+		_startPos += BranchLen;
+		std::string Opcode(_InstStr.substr(_startPos,OpLen));
+		if (Branch1(_InstStr)){
+			OPBRANCH1::iterator it = _opBranch1.find(Opcode);
+			if (it != _opBranch1.end()){
+				OP2FUNC::iterator iter = _Op2Func.find(it->second);
+				if (iter != _Op2Func.end()){
+					_startPos += OpLen;
+					(iter->second)(true,ParsedInst);
+				}
+			}
+		}
 		_IfUnit._executedInst = "";
 	}
 }
@@ -344,7 +356,6 @@ void InstParser::IssueInstruction()
 	branch1 = branch2 = 0;
 	for (auto it = tmpvec.begin();it != tmpvec.end();++it)
 	{
-		//auto it = _preIssuequ.front();
 		bCondDst= bCondSrc = false;
 		instAddr = it->first;
 		ParsedInst = it->second;
@@ -392,12 +403,6 @@ void InstParser::IssueInstruction()
 					_regVec[regidx->second.dstIdx]._bWrite = true;
 					_regVec[regidx->second.dstIdx]._tobewriteowner = 0;
 				}
-				//fixme !!!!!!!!!!!!!!!!!!!!!!		
-				//for (i = 0;i<regidx->second.dstNum;i++)
-				//{
-				//	_regVec[regidx->second.dstIdx[i]]._bTobeWrite = false;
-				//	_regVec[regidx->second.dstIdx[i]]._bWrite = true;
-				//}
 				for (i = 0;i<regidx->second.srcNum;i++)
 				{
 					_regVec[regidx->second.srcIdx[i]]._bTobeRead = false;
@@ -492,10 +497,6 @@ void InstParser::IssueInstruction()
 			_IfUnit._executedInst = _IfUnit._waitingInst;
 			_IfUnit._waitingInst = "";
 			_IfUnit._bStalled = false;
-			std::string ParsedInst;
-			auto it = _addr2OpInst.find(_IfUnit.branchAddr);
-			_InstStr = it->second;//current branch instruction
-			ParseEachInst(true,ParsedInst);
 		}
 	}
 	cycle ++;
@@ -668,7 +669,6 @@ void InstParser::ADD(bool bWB,std::string& ParsedInst)//(rs) +(rt) -> (rd)
 		regidx.srcNum = 2; regidx.dstNum = 1;
 		_addr2RegIdx.insert(std::make_pair(_InstructionAddr,regidx));
 	}
-	_bJump = false;
 }
 
 void InstParser::NOR(bool bWB,std::string& ParsedInst)// rs NOR rt -> (rd)
@@ -686,7 +686,6 @@ void InstParser::NOR(bool bWB,std::string& ParsedInst)// rs NOR rt -> (rd)
 	ParsedInst = format.str();
 	if (bWB)
 		_regVec[idxD]._val = ~(_regVec[idxS]._val | _regVec[idxT]._val);
-	_bJump = false;
 }
 
 void InstParser::SUB(bool bWB,std::string& ParsedInst)//rs - rt -> rd
@@ -710,7 +709,6 @@ void InstParser::SUB(bool bWB,std::string& ParsedInst)//rs - rt -> rd
 		regidx.srcNum = 2; regidx.dstNum = 1;
 		_addr2RegIdx.insert(std::make_pair(_InstructionAddr,regidx));
 	}
-	_bJump = false;
 }
 
 void InstParser::ADDI(bool bWB,std::string& ParsedInst)//rs + immediate -> rt
@@ -734,7 +732,6 @@ void InstParser::ADDI(bool bWB,std::string& ParsedInst)//rs + immediate -> rt
 		regidx.dstIdx = idxT; regidx.srcIdx.push_back(idxS); regidx.srcNum = 1;regidx.dstNum = 1;
 		_addr2RegIdx.insert(std::make_pair(_InstructionAddr,regidx));
 	}
-	_bJump = false;
 }
 
 void InstParser::BEQ(bool bWB,std::string& ParsedInst)//if rs = rt then branch
@@ -866,7 +863,6 @@ void InstParser::SLL(bool bWB,std::string& ParsedInst)//rt << sa -> rd
 		regidx.dstIdx = idxD;regidx.srcIdx.push_back(idxT);regidx.srcNum = 1;regidx.dstNum = 1;
 		_addr2RegIdx.insert(std::make_pair(_InstructionAddr,regidx));
 	}
-	_bJump = false;
 }
 
 void InstParser::SRL(bool bWB,std::string& ParsedInst) //logical shift right //rt >> sa ->rd
@@ -893,7 +889,6 @@ void InstParser::SRL(bool bWB,std::string& ParsedInst) //logical shift right //r
 		regidx.dstIdx = idxD;regidx.srcIdx.push_back(idxT);regidx.srcNum = 1;regidx.dstNum = 1;
 		_addr2RegIdx.insert(std::make_pair(_InstructionAddr,regidx));
 	}
-	_bJump = false;
 }
 
 void InstParser::SRA(bool bWB,std::string& ParsedInst) //arighmetic shift right //rt >> sa ->rd
@@ -917,7 +912,6 @@ void InstParser::SRA(bool bWB,std::string& ParsedInst) //arighmetic shift right 
 		regidx.dstIdx = idxD;regidx.srcIdx.push_back(idxT);regidx.srcNum = 1;regidx.dstNum = 1;
 		_addr2RegIdx.insert(std::make_pair(_InstructionAddr,regidx));
 	}
-	_bJump = false;
 }
 
 void InstParser::NOP(bool bWB,std::string& ParsedInst)//no op
@@ -927,7 +921,6 @@ void InstParser::NOP(bool bWB,std::string& ParsedInst)//no op
 	ParsedInst = format.str();
 	RegIdx regidx; regidx.srcNum = 0;
 	_addr2RegIdx.insert(std::make_pair(_InstructionAddr,regidx));
-	_bJump = false;
 }
 
 void InstParser::JR(bool bWB,std::string& ParsedInst)//rs -> pc
@@ -967,7 +960,6 @@ void InstParser::AND(bool bWB,std::string& ParsedInst)// rs AND rt -> rd
 		regidx.srcNum = 2; regidx.dstNum = 1;
 		_addr2RegIdx.insert(std::make_pair(_InstructionAddr,regidx));
 	}
-	_bJump = false;
 }
 
 void InstParser::ANDI(bool bWB,std::string& ParsedInst)// rs AND immediate -> rt
@@ -991,7 +983,6 @@ void InstParser::ANDI(bool bWB,std::string& ParsedInst)// rs AND immediate -> rt
 		regidx.srcNum = 1; regidx.dstNum = 1;
 		_addr2RegIdx.insert(std::make_pair(_InstructionAddr,regidx));
 	}
-	_bJump = false;
 }
 
 void InstParser::OR(bool bWB,std::string& ParsedInst)// rs or rt -> rd
@@ -1015,7 +1006,6 @@ void InstParser::OR(bool bWB,std::string& ParsedInst)// rs or rt -> rd
 		regidx.srcNum = 2; regidx.dstNum = 1;
 		_addr2RegIdx.insert(std::make_pair(_InstructionAddr,regidx));
 	}
-	_bJump = false;
 }
 
 void InstParser::ORI(bool bWB,std::string& ParsedInst)// rs or immediate -> rt
@@ -1039,7 +1029,6 @@ void InstParser::ORI(bool bWB,std::string& ParsedInst)// rs or immediate -> rt
 		regidx.srcNum = 1; regidx.dstNum = 1;
 		_addr2RegIdx.insert(std::make_pair(_InstructionAddr,regidx));
 	}
-	_bJump = false;
 }
 
 void InstParser::XOR(bool bWB,std::string& ParsedInst)// rs xor rt -> rd
@@ -1063,7 +1052,6 @@ void InstParser::XOR(bool bWB,std::string& ParsedInst)// rs xor rt -> rd
 		regidx.srcNum = 2; regidx.dstNum = 1;
 		_addr2RegIdx.insert(std::make_pair(_InstructionAddr,regidx));
 	}
-	_bJump = false;
 }
 
 void InstParser::XORI(bool bWB,std::string& ParsedInst)// rs xor immediate-> rt
@@ -1087,7 +1075,6 @@ void InstParser::XORI(bool bWB,std::string& ParsedInst)// rs xor immediate-> rt
 		regidx.srcNum = 1; regidx.dstNum = 1;
 		_addr2RegIdx.insert(std::make_pair(_InstructionAddr,regidx));
 	}
-	_bJump = false;
 }
 
 void InstParser::SLT(bool bWB,std::string& ParsedInst)// (rs < rt ) -> rd
@@ -1111,7 +1098,6 @@ void InstParser::SLT(bool bWB,std::string& ParsedInst)// (rs < rt ) -> rd
 		regidx.srcNum = 2; regidx.dstNum = 1;
 		_addr2RegIdx.insert(std::make_pair(_InstructionAddr,regidx));
 	}
-	_bJump = false;
 }
 
 void InstParser::LW(bool bWB,std::string& ParsedInst)//memory[base+offset] ->rt
@@ -1139,7 +1125,6 @@ void InstParser::LW(bool bWB,std::string& ParsedInst)//memory[base+offset] ->rt
 		regidx.dstIdx = idxT;regidx.srcIdx.push_back(base);regidx.srcNum = 1;regidx.dstNum = 1;
 		_addr2RegIdx.insert(std::make_pair(_InstructionAddr,regidx));
 	}
-	_bJump = false;
 }
 
 void InstParser::MUL(bool bWB,std::string& ParsedInst)//rs * rt -> rd
@@ -1163,7 +1148,6 @@ void InstParser::MUL(bool bWB,std::string& ParsedInst)//rs * rt -> rd
 		regidx.srcNum = 2;regidx.dstNum = 1;
 		_addr2RegIdx.insert(std::make_pair(_InstructionAddr,regidx));
 	}
-	_bJump = false;
 }
 
 void InstParser::SW(bool bWB,std::string& ParsedInst)//rt -> memory[base+offset]
@@ -1191,7 +1175,6 @@ void InstParser::SW(bool bWB,std::string& ParsedInst)//rt -> memory[base+offset]
 		regidx.srcIdx.push_back(idxBase);regidx.srcIdx.push_back(idxT);regidx.srcNum = 2;
 		_addr2RegIdx.insert(std::make_pair(_InstructionAddr,regidx));
 	}
-	_bJump = false;
 }
 
 void InstParser::BREAK(bool bWB,std::string& ParsedInst)
